@@ -157,6 +157,21 @@ def aggregate_bayes_params(
 
     new_weight_logvar = _var_to_param(weight_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
     new_bias_logvar = _var_to_param(bias_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+    if beta != 1.0:
+        weight_mu = (1.0 - beta) * prev.weight_mu + beta * weight_mu
+        bias_mu = (1.0 - beta) * prev.bias_mu + beta * bias_mu
+        new_weight_logvar = (1.0 - beta) * prev.weight_logvar + beta * new_weight_logvar
+        new_bias_logvar = (1.0 - beta) * prev.bias_logvar + beta * new_bias_logvar
+        if ptype == "logvar" and (logvar_min is not None or logvar_max is not None):
+            if logvar_min is not None and logvar_max is not None:
+                new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
+                new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
+            elif logvar_min is not None:
+                new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min))
+                new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min))
+            elif logvar_max is not None:
+                new_weight_logvar = new_weight_logvar.clamp(max=float(logvar_max))
+                new_bias_logvar = new_bias_logvar.clamp(max=float(logvar_max))
 
     return BayesParams(
         weight_mu=weight_mu.detach().clone(),
