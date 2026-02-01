@@ -5,7 +5,7 @@ from typing import Dict, List
 import torch
 
 from bayes_federated.bayes_layers import BayesParams
-from bayes_federated.bayes_param import normalize_param_type
+from bayes_federated.bayes_param import normalize_param_type, param_to_var, rho_from_sigma
 
 
 def _clone_tensor(t: torch.Tensor, *, device: torch.device, requires_grad: bool) -> torch.Tensor:
@@ -97,6 +97,28 @@ def _normalize_weights(weights: List[float], *, dtype: torch.dtype, device: torc
     return w / w_sum
 
 
+def _var_to_param(
+    var: torch.Tensor,
+    *,
+    param_type: str,
+    logvar_min: float | None,
+    logvar_max: float | None,
+) -> torch.Tensor:
+    var = var.clamp_min(1e-12)
+    ptype = normalize_param_type(param_type)
+    if ptype == "rho":
+        sigma = torch.sqrt(var)
+        return rho_from_sigma(sigma)
+    logvar = torch.log(var)
+    if logvar_min is not None and logvar_max is not None:
+        return logvar.clamp(min=float(logvar_min), max=float(logvar_max))
+    if logvar_min is not None:
+        return logvar.clamp(min=float(logvar_min))
+    if logvar_max is not None:
+        return logvar.clamp(max=float(logvar_max))
+    return logvar
+
+
 def aggregate_bayes_params(
     *,
     prev: BayesParams,
@@ -111,31 +133,49 @@ def aggregate_bayes_params(
         raise ValueError("No local params to aggregate.")
     beta = float(server_beta)
     w = _normalize_weights(weights, dtype=prev.weight_mu.dtype, device=prev.weight_mu.device)
-    weight_mu = sum(wi * lp.weight_mu for wi, lp in zip(w, locals))
-    weight_logvar = sum(wi * lp.weight_logvar for wi, lp in zip(w, locals))
-    bias_mu = sum(wi * lp.bias_mu for wi, lp in zip(w, locals))
-    bias_logvar = sum(wi * lp.bias_logvar for wi, lp in zip(w, locals))
+    ptype = normalize_param_type(param_type)
 
-    new_weight_mu = (1.0 - beta) * prev.weight_mu + beta * weight_mu
-    new_weight_logvar = (1.0 - beta) * prev.weight_logvar + beta * weight_logvar
-    new_bias_mu = (1.0 - beta) * prev.bias_mu + beta * bias_mu
-    new_bias_logvar = (1.0 - beta) * prev.bias_logvar + beta * bias_logvar
+    weight_mu_stack = torch.stack([lp.weight_mu for lp in locals], dim=0)
+    bias_mu_stack = torch.stack([lp.bias_mu for lp in locals], dim=0)
+    weight_var_stack = torch.stack(
+        [param_to_var(lp.weight_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max) for lp in locals],
+        dim=0,
+    )
+    bias_var_stack = torch.stack(
+        [param_to_var(lp.bias_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max) for lp in locals],
+        dim=0,
+    )
 
-    if normalize_param_type(param_type) == "logvar" and (logvar_min is not None or logvar_max is not None):
-        if logvar_min is not None and logvar_max is not None:
-            new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
-            new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
-        elif logvar_min is not None:
-            new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min))
-            new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min))
-        elif logvar_max is not None:
-            new_weight_logvar = new_weight_logvar.clamp(max=float(logvar_max))
-            new_bias_logvar = new_bias_logvar.clamp(max=float(logvar_max))
+    w_broadcast = w.view(-1, *([1] * (weight_mu_stack.dim() - 1)))
+    weight_mu = (w_broadcast * weight_mu_stack).sum(dim=0)
+    bias_mu = (w_broadcast * bias_mu_stack).sum(dim=0)
+
+    w_var_weight = w.view(-1, *([1] * (weight_var_stack.dim() - 1)))
+    weight_var = (w_var_weight * (weight_var_stack + (weight_mu_stack - weight_mu) ** 2)).sum(dim=0)
+    bias_var = (w_var_weight * (bias_var_stack + (bias_mu_stack - bias_mu) ** 2)).sum(dim=0)
+
+    new_weight_logvar = _var_to_param(weight_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+    new_bias_logvar = _var_to_param(bias_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+    if beta != 1.0:
+        weight_mu = (1.0 - beta) * prev.weight_mu + beta * weight_mu
+        bias_mu = (1.0 - beta) * prev.bias_mu + beta * bias_mu
+        new_weight_logvar = (1.0 - beta) * prev.weight_logvar + beta * new_weight_logvar
+        new_bias_logvar = (1.0 - beta) * prev.bias_logvar + beta * new_bias_logvar
+        if ptype == "logvar" and (logvar_min is not None or logvar_max is not None):
+            if logvar_min is not None and logvar_max is not None:
+                new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
+                new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
+            elif logvar_min is not None:
+                new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min))
+                new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min))
+            elif logvar_max is not None:
+                new_weight_logvar = new_weight_logvar.clamp(max=float(logvar_max))
+                new_bias_logvar = new_bias_logvar.clamp(max=float(logvar_max))
 
     return BayesParams(
-        weight_mu=new_weight_mu.detach().clone(),
+        weight_mu=weight_mu.detach().clone(),
         weight_logvar=new_weight_logvar.detach().clone(),
-        bias_mu=new_bias_mu.detach().clone(),
+        bias_mu=bias_mu.detach().clone(),
         bias_logvar=new_bias_logvar.detach().clone(),
     )
 
