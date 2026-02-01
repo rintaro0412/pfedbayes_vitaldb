@@ -86,6 +86,9 @@ for SEED in "${SEEDS[@]}"; do
 
   # pFedBayes: create a temp config per seed
   CKPT_OVERRIDE="${BACKBONE_CKPT}"
+  if [[ "${CKPT_OVERRIDE}" == "none" ]]; then
+    CKPT_OVERRIDE=""
+  fi
   if [[ -z "${CKPT_OVERRIDE}" ]]; then
     CKPT_OVERRIDE="${FED_OUT}/${RUN}/checkpoints/model_best.pt"
   fi
