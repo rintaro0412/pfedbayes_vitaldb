@@ -131,7 +131,8 @@ def aggregate_bayes_params(
 ) -> BayesParams:
     if not locals:
         raise ValueError("No local params to aggregate.")
-    beta = float(server_beta)
+    if float(server_beta) != 1.0:
+        raise ValueError("pFedBayes aggregation requires server_beta=1.0 for strict paper alignment.")
     w = _normalize_weights(weights, dtype=prev.weight_mu.dtype, device=prev.weight_mu.device)
     ptype = normalize_param_type(param_type)
 
