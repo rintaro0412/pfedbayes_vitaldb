@@ -1,2 +1,1 @@
-"""Bayesian Federated Learning (BFL) package."""
-
+"""Bayesian federated learning package (pFedBayes-focused)."""

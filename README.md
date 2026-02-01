@@ -47,13 +47,12 @@
 - 参考論文: McMahan et al., *Communication-Efficient Learning of Deep Networks from Decentralized Data*（AISTATS, 2017）
 - 背景: 標準的な FedAvg を比較基準として採用。
 
-### 6) ベイズ化／パーソナライズ（pFedBayes, BFL）
+### 6) ベイズ化／パーソナライズ（pFedBayes）
 - 参考論文:  
   - Zhang et al., *Personalized Federated Learning via Variational Bayesian Inference*（ICML, 2022）  
   - Hinton, *Training Products of Experts by Minimizing Contrastive Divergence*（Neural Computation, 2002）  
 - 背景:  
   - pFedBayes の変分ベイズ枠組みを再現。  
-  - BFL の統合は PoE（Product of Experts）の考え方を参考にした prior-corrected 集約。
 
 ### 7) 校正（Temperature Scaling）と閾値（Youden）
 - 参考論文:  
@@ -73,58 +72,50 @@
 - `SNUADC/PLETH`（PPG）
 - `SNUADC/ECG_II`（ECG）
 - `SNUADC/ART`（ABP; 必須）
-- `SNUADC/ETCO2` / `SNUADC/CO2`（ETCO2）
+- `Primus/CO2`（ETCO2; downloader はこのトラックを保存）
 - `Solar8000/HR`（品質用）
 - `Solar8000/PLETH_SPO2`（品質用）
 
 ## 前提（Python環境）
 
-このworkspaceには `venv/` があり、`vitaldb` などがそこに入っています。以降の例は venv を使う想定です。
+必要に応じて venv を作成し、依存関係を入れてください（CPU/GPU で分離）。
 
 ```bash
+python -m venv venv
 source venv/bin/activate
-python -V
+pip install -r requirements-venv.txt
 ```
 
-## 実行手順（DL → 前処理 → インデックス → 中央学習 → 評価 → FedAvg）
+## 実行手順（DL → データセット生成 → 中央学習 → 評価 → FedAvg）
 
 ### 1) ダウンロード
 
-`data/raw/vitaldb/case_{caseid}.csv.gz` を作ります。`--from-api` を使うと `clinical_data.csv` も保存します。
+`vitaldb_data/case_{caseid}.csv.gz` を作ります。`clinical_data.csv` も保存します。
 
 ```bash
-python scripts/download_vitaldb.py --from-api \
-  --save-dir data/raw/vitaldb \
-  --clinical-out data/raw/clinical_data.csv \
-  --summary-csv data/raw/download_summary.csv
+python scripts/data_download.py \
+  --save-dir vitaldb_data \
+  --clinical-save-path clinical_data.csv \
+  --run-log download_run.json
 ```
 
-任意のcaseidを指定したい場合:
+任意のケース数に絞りたい場合:
 
 ```bash
-python scripts/download_vitaldb.py --caseids 10,22,34 --save-dir data/raw/vitaldb
+python scripts/data_download.py --max-cases 100 --shuffle --seed 42
 ```
 
-### 2) 症例ごとの前処理（npz化）
-
-`data/processed/case_{caseid}.npz` を作ります。`--trim-start-sec/--trim-end-sec` で導入期などの解析範囲を調整できます（秒）。
-
-```bash
-python scripts/preprocess_case.py \
-  --raw-dir data/raw/vitaldb \
-  --out-dir data/processed \
-  --summary-csv data/processed/preprocess_summary.csv
-```
-
-### 3) 学習/評価用データセット生成（build_dataset形式）
+### 2) 学習/評価用データセット生成（build_dataset形式）
 
 - 出力: `federated_data/<client_id>/<split>/case_*.npz`
-- 入力: `clinical_data.csv` と `vitaldb_data/`（`scripts/download_vitaldb.py` の出力）
+- 入力: `clinical_data.csv` と `vitaldb_data/`（`scripts/data_download.py` の出力）
 
 ```bash
 # 診療科内で術式優先→不足は手術カテゴリにフォールバックし、
 # 小規模は診療科ごとのプールに統合する（デフォルト）
 python scripts/build_dataset.py \
+  --clinical-csv clinical_data.csv \
+  --wave-dir vitaldb_data \
   --client-scheme opname_optype \
   --merge-strategy dept_pool \
   --opname-threshold 150 \
@@ -138,6 +129,7 @@ python scripts/build_dataset.py \
 `federated_data/summary.json` に、抽出ウィンドウ数などの集計メタを出力します。
 `summary.json` には `client_scheme/merge_strategy/opname_threshold/min_client_cases` と
 最終クライアント数も含まれます。client_id は `Department__ClientRaw` 形式です。
+`--out-dir` が既に存在する場合、build_dataset は中身を削除して作り直します。
 
 心拍周期の生理範囲（デフォルト 0.3–2.0 秒）を変更したい場合:
 
@@ -149,6 +141,12 @@ python scripts/build_dataset.py --cycle-min-sec 0.3 --cycle-max-sec 2.0
 
 ```bash
 python scripts/build_dataset.py --no-instance-norm
+```
+
+ETCO2 欠損症例も含めたい場合（欠損はゼロ埋め）:
+
+```bash
+python scripts/build_dataset.py --no-require-etco2
 ```
 
 出力 `.npz` はデフォルトで圧縮されます（容量が非常に大きくなるのを防ぐため）。無圧縮にしたい場合:
@@ -163,7 +161,7 @@ BUILD_DATASET_COMPRESS=0 python scripts/build_dataset.py
 python scripts/recompress_npz.py --data-dir federated_data
 ```
 
-### 4) 中央学習（baseline）
+### 3) 中央学習（baseline）
 
 ```bash
 python centralized/train.py \
@@ -181,7 +179,7 @@ python centralized/train.py \
 - `val_report.json`（校正前/後）
 - `history.csv`
 
-### 5) test評価（固定温度＋固定閾値）
+### 4) test評価（固定温度＋固定閾値）
 
 ```bash
 python centralized/eval.py \
@@ -190,7 +188,7 @@ python centralized/eval.py \
   --split test
 ```
 
-### 6) FedAvg（比較用）
+### 5) FedAvg（比較用）
 
 build_dataset 出力のクライアント分割（`federated_data/<client_id>/...`）をそのまま使います（依存を最小化するためFlowerは未使用の最小実装）。
 
@@ -211,50 +209,7 @@ python federated/server.py \
 出力は `runs/fedavg/<run_name>/` に保存され、中央学習と同様に `temperature.json / threshold.json / test_report.json` を持ちます。
 加えて、クライアント別の test 指標を `test_report_per_client.json / test_report_per_client.csv` に保存します。
 
-### 7) BFL（Bayesian Federated Learning）
-
-最終層のみベイズ化し、クライアントの近似事後を **PoE_prior_corrected + damping** で統合します。
-点推定のbackbone checkpointが必須です（未指定の場合はゼロ初期化で動作しますが推奨しません）。
-
-1. `configs/bfl.yaml` の `backbone.checkpoint` を、点推定モデルの checkpoint に合わせてください。
-
-2. サーバ起動（round管理・val評価・best選択・test評価まで実行）:
-
-```bash
-python bayes_federated/bfl_server.py --config configs/bfl.yaml
-```
-
-進捗表示:
-- ラウンド内のクライアント処理は progress bar を表示します（無効化: `--no-progress-bar`）
-- 各クライアントのバッチ進捗も表示したい場合: `--client-progress-bar`
-- `history.csv` には各ラウンドの `train_loss` と `val_auprc/temperature/threshold` を記録します
-
-3. 中断復帰:
-
-```bash
-python bayes_federated/bfl_server.py --config configs/bfl.yaml --resume
-```
-
-4. test評価のみ再実行（best checkpoint を使う）:
-
-```bash
-python bayes_federated/eval.py \
-  --data-dir federated_data \
-  --checkpoint runs/bfl/<run_name>/checkpoints/model_best.pt \
-  --split test \
-  --mc-eval 50
-```
-
-BFLの出力は `runs/bfl/<run_name>/` 以下に保存されます:
-- `summary.json`（best round/閾値/温度）
-- `history.csv`（roundごとのval指標）
-- `round_XXX_val_pre.json` / `round_XXX_val_post.json`
-- `round_XXX_clients.json`
-- `test_report.json`
-- `test_report_per_client.json` / `test_report_per_client.csv`（クライアント別 test 指標）
-- `checkpoints/model_best.pt`
-
-### 8) pFedBayes（Personalized VI）
+### 6) pFedBayes（Personalized VI）
 
 各クライアントで **posterior q_i** と **localized global w_i** を交互更新し、サーバで
 `v^{t+1} = (1-β) v^t + β * mean(v_w,i)` を実行します（完全版アルゴリズム）。
@@ -292,22 +247,22 @@ pFedBayes の出力は `runs/pfedbayes/<run_name>/` 以下に保存されます:
 - `test_report.json`
 - `checkpoints/model_best.pt`
 
-### 9) 有意性評価（paired bootstrap）
+### 7) 有意性評価（paired bootstrap）
 
-FedAvg と BFL の test 指標差（例: AUPRC / ECE）について、caseid 単位の paired bootstrap で差の95%CIと p 値を出します。
+FedAvg と pFedBayes の test 指標差（例: AUPRC / ECE）について、caseid 単位の paired bootstrap で差の95%CIと p 値を出します。
 
 ```bash
 python scripts/compare_significance.py \
   --data-dir federated_data \
   --split test \
   --a-kind ioh --a-run-dir runs/fedavg/<run_name> \
-  --b-kind bfl --b-run-dir runs/bfl/<run_name> \
+  --b-kind bfl --b-run-dir runs/pfedbayes/<run_name> \
   --variant post \
   --bootstrap-n 2000 \
-  --out runs/compare/bfl_vs_fedavg_test_post.json
+  --out runs/compare/pfedbayes_vs_fedavg_test_post.json
 ```
 
-### 10) クライアント単位マクロ平均での比較（min_client_cases 未満は除外）
+### 8) クライアント単位マクロ平均での比較（min_client_cases 未満は除外）
 
 同一分割・同一温度学習（valのみ）でクライアント別指標を計算し、case数が `min_client_cases` 以上の「適格クライアント」だけでマクロ平均（各クライアント同一重み）した指標を seed ごとに比較します。`min_client_cases` 未満のクライアントは一次解析から除外し、参考値として別出力します。
 
@@ -315,7 +270,7 @@ python scripts/compare_significance.py \
 python scripts/eval_compare_clients.py \
   --data-dir federated_data \
   --fedavg-runs runs/fedavg/run_a,runs/fedavg/run_b \
-  --bfl-runs runs/bfl/run_a,runs/bfl/run_b \
+  --bfl-runs runs/pfedbayes/run_a,runs/pfedbayes/run_b \
   --seeds 0,1 \
   --mc-eval 50
 ```
@@ -326,9 +281,8 @@ python scripts/eval_compare_clients.py \
 
 ## 監査可能性（ログ/メタ）
 
-- `scripts/download_vitaldb.py` は `download_summary.csv` と `download_run.json` を出力
-- `scripts/preprocess_case.py` は `preprocess_summary.csv` と `preprocess_run.json` を出力
-- `scripts/build_dataset.py` は `federated_data/` に学習用 `.npz` を出力
+- `scripts/data_download.py` は `vitaldb_data/` と `clinical_data.csv` と `download_run.json` を出力
+- `scripts/build_dataset.py` は `federated_data/` と `federated_data/summary.json` を出力
 - 学習は `run_config.json`（seed・split・pos_weight・git hash等）を保存
 
 ## 参考文献
