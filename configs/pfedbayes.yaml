@@ -48,7 +48,7 @@ train:
 
 pfedbayes:
   zeta: 1e-4
-  server_beta: 0.3
+  server_beta: 1.0
   weight_mode: uniform  # uniform | n_examples
 
 loss:
