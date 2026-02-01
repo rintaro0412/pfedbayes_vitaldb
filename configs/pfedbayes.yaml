@@ -1,0 +1,77 @@
+run:
+  out_dir: runs/pfedbayes
+  run_name: seed0
+  resume: false
+
+seed: 0
+device: cuda
+
+data:
+  data_dir: federated_data
+  train_split: train
+  val_split: val
+  test_split: test
+
+clients:
+  min_examples: 10
+  sample_fraction: 1.0
+  sample_size: 0
+
+backbone:
+  checkpoint: null
+  train_backbone: true
+
+bayes:
+  full_bayes: true
+  prior_sigma: 0.05
+  logvar_min: -12
+  logvar_max: 6
+  param_type: rho
+  mu_init: pytorch
+  init_rho: -2.5
+
+train:
+  rounds: 10
+  local_epochs: 1
+  batch_size: 256
+  lr_q: 0.001
+  lr_w: 0.001
+  weight_decay: 0.0001
+  num_workers: 8
+  mc_train: 10
+  mc_eval: 50
+  grad_clip: 5.0
+  grad_clip_w: 0.0
+  max_steps: 0
+  q_optim: adamw
+  w_optim: adamw
+
+pfedbayes:
+  zeta: 1e-4
+  server_beta: 0.3
+  weight_mode: uniform  # uniform | n_examples
+
+loss:
+  type: focal
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+
+eval:
+  model_selection: best  # best | last
+  selection_source: val # val | test
+  selection_metric: auroc # auprc | auroc | accuracy
+  selection_use_post: true
+  threshold_use_post: false
+  threshold:
+    method: youden
+    recall_target: 0.8
+    fixed: 0.5
+  calibration:
+    temperature_max_iter: 100
+  # Save per-sample test predictions/uncertainty (true => run_dir/test_predictions.npz)
+  save_test_pred_npz: true
+  test_every_round: true
+  per_client_every_round: true
+  bootstrap:
+    n_boot: 1000
+    seed: 42

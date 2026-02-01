@@ -1,0 +1,64 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+*.egg-info/
+.eggs/
+build/
+dist/
+.tox/
+.nox/
+.git_old/
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+venv-gpu/
+
+# Local env files
+.env
+.env.*
+.python-version
+
+# Editors / OS
+.vscode/
+.vscode-server/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project caches
+.cache/
+.paper_cache/
+*.log
+*.out
+*.err
+
+# Data / generated artifacts
+federated_data/
+paper/
+vitaldb_data/
+vitaldb_data_old/
+data/
+runs/
+clinical_data.csv
+data_inventory.json
+tmp_*.json
+
+# Model/checkpoint artifacts
+*.pt
+*.pth
+*.ckpt
+*.pkl
+
+# Local scratch
+a.py
+目次案.pptx

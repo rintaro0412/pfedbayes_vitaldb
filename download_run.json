@@ -1,0 +1,51 @@
+{
+  "started_utc": "2026-02-01T14:40:39.265438+00:00",
+  "config": {
+    "save_dir": "./vitaldb_data",
+    "clinical_save_path": "clinical_data.csv",
+    "workers": 128,
+    "executor": "process",
+    "prefilter_required": true,
+    "all_tracks": [
+      "Solar8000/ART_MBP",
+      "SNUADC/PLETH",
+      "SNUADC/ECG_II",
+      "SNUADC/ART",
+      "Primus/CO2"
+    ],
+    "required_tracks": [
+      "Solar8000/ART_MBP",
+      "SNUADC/PLETH",
+      "SNUADC/ECG_II",
+      "SNUADC/ART",
+      "Primus/CO2"
+    ],
+    "excluded_optypes": [
+      "Transplantation",
+      "Cardiac Surgery"
+    ],
+    "max_cases": 0,
+    "force": false,
+    "shuffle": false,
+    "seed": 42
+  },
+  "system": {
+    "platform": "Linux-6.8.0-48-generic-x86_64-with-glibc2.35",
+    "python": "3.11.10",
+    "cpu_count": 128,
+    "mem_total_kb": 527985808,
+    "numpy": "2.3.3",
+    "pandas": "2.3.3",
+    "vitaldb": null
+  },
+  "stats": {
+    "to_download": 1,
+    "downloaded": 1,
+    "skipped": 0,
+    "short": 0,
+    "missing_required": 0,
+    "failed": 0
+  },
+  "finished_utc": "2026-02-01T14:40:58.847384+00:00",
+  "elapsed_sec": 19.58198118209839
+}
