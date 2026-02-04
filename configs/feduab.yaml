@@ -6,7 +6,6 @@ run:
 data:
   data_dir: federated_data
   train_split: train
-  val_split: val
   test_split: test
 
 train:
@@ -55,7 +54,6 @@ agg:
 
 eval:
   eval_threshold: 0.5
-  threshold_method: youden-val
   eval_personalized: true
   eval_global: true
   eval_ensemble: true

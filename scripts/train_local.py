@@ -23,7 +23,7 @@ from common.dataset import WindowedNPZDataset, list_client_ids, list_npz_files, 
 from common.experiment import save_env_snapshot
 from common.io import ensure_dir, get_git_hash, now_utc_iso, write_json
 from common.ioh_model import IOHModelConfig, IOHNet
-from common.metrics import best_threshold_youden, compute_binary_metrics, sigmoid_np
+from common.metrics import compute_binary_metrics, sigmoid_np
 from common.utils import calc_comprehensive_metrics, set_seed
 
 
@@ -111,8 +111,6 @@ def main() -> None:
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--eval-threshold", type=float, default=0.5, help="Fixed threshold for round-by-round metrics.")
-    ap.add_argument("--threshold-method", default="youden-val", choices=["fixed", "youden-val"])
-    ap.add_argument("--val-split", default="val", help="Split name used to select threshold when --threshold-method=youden-val.")
 
     ap.add_argument("--model-base-channels", type=int, default=32)
     ap.add_argument("--dropout", type=float, default=0.1)
@@ -132,8 +130,6 @@ def main() -> None:
     ap.add_argument("--no-progress-bar", action="store_true", help="Disable per-epoch progress bar.")
     args = ap.parse_args()
 
-    thr_method = str(args.threshold_method).lower()
-
     set_seed(int(args.seed))
     torch.set_num_threads(max(1, min(os.cpu_count() or 4, 8)))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,26 +141,15 @@ def main() -> None:
     client_ids = list_client_ids(args.data_dir)
     client_train_files: Dict[str, List[str]] = {}
     client_test_files: Dict[str, List[str]] = {}
-    client_val_files: Dict[str, List[str]] = {}
     for cid in client_ids:
         train_files = list_npz_files(args.data_dir, args.train_split, client_id=str(cid))
         test_files = list_npz_files(args.data_dir, args.test_split, client_id=str(cid))
-        val_files: List[str] = []
-        if thr_method == "youden-val":
-            val_files = list_npz_files(args.data_dir, args.val_split, client_id=str(cid))
         if train_files:
             client_train_files[str(cid)] = train_files
             client_test_files[str(cid)] = test_files
-            if thr_method == "youden-val":
-                client_val_files[str(cid)] = val_files
     client_ids = sorted(client_train_files.keys())
     if not client_ids:
         raise SystemExit("No client train files found under --data-dir.")
-    if thr_method == "youden-val":
-        has_val = any(client_val_files.get(cid) for cid in client_ids)
-        if not has_val:
-            print("[WARN] youden-val requested but no val files found; falling back to fixed threshold.")
-            thr_method = "fixed"
 
     sample_file = next(iter(client_train_files.values()))[0]
     ds_sample = WindowedNPZDataset(
@@ -196,7 +181,6 @@ def main() -> None:
 
     client_train_dl: Dict[str, DataLoader] = {}
     client_test_dl: Dict[str, DataLoader] = {}
-    client_val_dl: Dict[str, DataLoader] = {}
     client_counts: Dict[str, Dict[str, int]] = {}
     for cid, files in client_train_files.items():
         ds = WindowedNPZDataset(
@@ -236,29 +220,7 @@ def main() -> None:
                 )
             else:
                 client_test_dl[cid] = DataLoader(ds_t, shuffle=False, **dl_common)
-        if thr_method == "youden-val":
-            val_files = client_val_files.get(cid, [])
-            if val_files:
-                ds_v = WindowedNPZDataset(
-                    val_files,
-                    use_clin="true",
-                    cache_in_memory=bool(args.cache_in_memory),
-                    max_cache_files=int(args.max_cache_files),
-                    cache_dtype=str(args.cache_dtype),
-                )
-                if num_workers > 0:
-                    client_val_dl[cid] = DataLoader(
-                        ds_v,
-                        shuffle=False,
-                        prefetch_factor=int(args.prefetch_factor),
-                        **dl_common,
-                    )
-                else:
-                    client_val_dl[cid] = DataLoader(ds_v, shuffle=False, **dl_common)
-
     splits = {"train": str(args.train_split), "test": str(args.test_split)}
-    if thr_method == "youden-val":
-        splits["val"] = str(args.val_split)
     run_meta: Dict[str, Any] = {
         "started_utc": now_utc_iso(),
         "git_hash": get_git_hash(PROJECT_ROOT),
@@ -274,8 +236,6 @@ def main() -> None:
             "lr": float(args.lr),
             "weight_decay": float(args.weight_decay),
             "eval_threshold": float(args.eval_threshold),
-            "threshold_method": str(thr_method),
-            "val_split": str(args.val_split),
             "log_interval": int(args.log_interval),
             "progress_bar": bool(not args.no_progress_bar),
             "num_workers": int(args.num_workers),
@@ -333,19 +293,6 @@ def main() -> None:
             train_losses[str(cid)] = float(tr_loss)
 
         thr = float(args.eval_threshold)
-        if thr_method == "youden-val":
-            val_y_all: List[np.ndarray] = []
-            val_prob_all: List[np.ndarray] = []
-            for cid, dl_val in client_val_dl.items():
-                logits_val, y_val = _predict_logits(models[cid], dl_val, device=device)
-                prob_val = sigmoid_np(logits_val)
-                val_y_all.append(y_val)
-                val_prob_all.append(prob_val)
-            if val_y_all:
-                y_val_cat = np.concatenate(val_y_all, axis=0)
-                prob_val_cat = np.concatenate(val_prob_all, axis=0)
-                thr = best_threshold_youden(y_val_cat, prob_val_cat, fallback=float(args.eval_threshold))
-
         for cid in client_ids:
             dl_test = client_test_dl.get(cid)
             tr_loss = float(train_losses.get(str(cid), float("nan")))

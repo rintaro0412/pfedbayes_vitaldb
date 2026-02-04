@@ -107,46 +107,6 @@ def mc_predict(
     return out
 
 
-def select_threshold(
-    y_true: np.ndarray,
-    prob: np.ndarray,
-    *,
-    method: str,
-    recall_target: float,
-    fixed_threshold: float,
-) -> float:
-    method = str(method)
-    if method == "fixed_threshold":
-        return float(fixed_threshold)
-    if method == "youden":
-        try:
-            from sklearn.metrics import roc_curve
-
-            fpr, tpr, thr = roc_curve(y_true, prob)
-            j = tpr - fpr
-            idx = int(np.nanargmax(j))
-            return float(thr[idx])
-        except Exception:
-            return float(fixed_threshold)
-    if method == "ppv_at_recall":
-        try:
-            from sklearn.metrics import precision_recall_curve
-
-            precision, recall, thr = precision_recall_curve(y_true, prob)
-            best_thr = float(fixed_threshold)
-            best_ppv = -1.0
-            for p, r, t in zip(precision[:-1], recall[:-1], thr):
-                if r >= float(recall_target) and p > best_ppv:
-                    best_ppv = float(p)
-                    best_thr = float(t)
-            if best_ppv < 0:
-                return float(fixed_threshold)
-            return float(best_thr)
-        except Exception:
-            return float(fixed_threshold)
-    return float(fixed_threshold)
-
-
 def evaluate_split(
     *,
     model: BFLModel,
@@ -155,10 +115,7 @@ def evaluate_split(
     device: torch.device,
     temperature: float | None = None,
     threshold: float | None = None,
-    threshold_method: str = "youden",
-    recall_target: float = 0.8,
     fixed_threshold: float = 0.5,
-    threshold_use_post: bool = True,
     bootstrap_n: int = 0,
     bootstrap_seed: int = 42,
     save_pred_path: str | None = None,
@@ -213,15 +170,8 @@ def evaluate_split(
         prob_cal = None
 
     if threshold is None:
-        base_prob = prob_cal if (prob_cal is not None and bool(threshold_use_post)) else prob
-        threshold = select_threshold(
-            y_true,
-            base_prob,
-            method=threshold_method,
-            recall_target=recall_target,
-            fixed_threshold=fixed_threshold,
-        )
-        report["threshold_selected"] = float(threshold)
+        threshold = float(fixed_threshold)
+    report["threshold_selected"] = float(threshold)
 
     report["confusion_pre"] = confusion_at_threshold(y_true, prob, thr=float(threshold))
     if prob_cal is not None:
@@ -266,10 +216,7 @@ def main() -> None:
     ap.add_argument("--split", default="test")
     ap.add_argument("--mc-eval", type=int, default=50)
     ap.add_argument("--temperature", type=float, default=None)
-    ap.add_argument("--threshold", type=float, default=None)
-    ap.add_argument("--threshold-method", default="youden")
-    ap.add_argument("--recall-target", type=float, default=0.8)
-    ap.add_argument("--fixed-threshold", type=float, default=0.5)
+    ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--bootstrap-n", type=int, default=1000)
     ap.add_argument("--bootstrap-seed", type=int, default=42)
     ap.add_argument("--batch-size", type=int, default=128)
@@ -293,10 +240,8 @@ def main() -> None:
         mc_eval=int(args.mc_eval),
         device=device,
         temperature=(float(args.temperature) if args.temperature is not None else None),
-        threshold=(float(args.threshold) if args.threshold is not None else None),
-        threshold_method=str(args.threshold_method),
-        recall_target=float(args.recall_target),
-        fixed_threshold=float(args.fixed_threshold),
+        threshold=float(args.threshold),
+        fixed_threshold=float(args.threshold),
         bootstrap_n=int(args.bootstrap_n),
         bootstrap_seed=int(args.bootstrap_seed),
         save_pred_path=(str(args.save_pred_npz) if args.save_pred_npz else None),

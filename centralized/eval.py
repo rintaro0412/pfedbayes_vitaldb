@@ -23,7 +23,6 @@ from common.ioh_model import IOHModelConfig, IOHNet, normalize_model_cfg
 from common.metrics import (
     auprc,
     auroc,
-    best_threshold_youden,
     bootstrap_group_ci,
     confusion_at_threshold,
     compute_binary_metrics,
@@ -56,7 +55,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate IOH model on windowed NPZ splits")
     ap.add_argument("--data-dir", default="federated_data", help="Output of scripts/build_dataset.py")
     ap.add_argument("--run-dir", required=True, help="Run dir created by centralized/train.py")
-    ap.add_argument("--split", default="test", choices=["train", "val", "test"])
+    ap.add_argument("--split", default="test", choices=["train", "test"])
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--num-workers", type=int, default=0)
     ap.add_argument("--cache-in-memory", action="store_true")
@@ -68,8 +67,6 @@ def main() -> None:
     ap.add_argument("--save-pred-npz", default=None, help="Optional .npz to save per-sample predictions.")
     ap.add_argument("--per-client", action="store_true", help="Save per-client report (test split only).")
     ap.add_argument("--threshold", type=float, default=0.5, help="Fixed threshold for confusion metrics.")
-    ap.add_argument("--threshold-method", default="fixed", choices=["fixed", "youden", "youden-val"])
-    ap.add_argument("--val-split", default="val", help="Split name used to select threshold when --threshold-method=youden-val.")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -79,11 +76,7 @@ def main() -> None:
     if not ckpt_path.exists():
         raise SystemExit(f"checkpoint not found under {run_dir}/checkpoints")
 
-    thr_method = str(args.threshold_method).lower()
-    if thr_method in {"youden", "youden-val"}:
-        threshold = None
-    else:
-        threshold = float(args.threshold)
+    threshold = float(args.threshold)
 
     files = list_npz_files(args.data_dir, args.split)
     if not files:
@@ -110,32 +103,6 @@ def main() -> None:
     model = IOHNet(normalize_model_cfg(ckpt.get("model_cfg", {}))).to(device)
     model.load_state_dict(ckpt["state_dict"], strict=True)
 
-    if thr_method == "youden-val":
-        if str(args.split) != "test":
-            raise SystemExit("--threshold-method=youden-val is only supported for --split test.")
-        val_files = list_npz_files(args.data_dir, args.val_split)
-        if not val_files:
-            raise SystemExit("No val files found for youden-val (check --val-split and dataset).")
-        ds_val = WindowedNPZDataset(
-            val_files,
-            use_clin="true",
-            cache_in_memory=bool(args.cache_in_memory),
-            max_cache_files=int(args.max_cache_files),
-            cache_dtype=str(args.cache_dtype),
-        )
-        dl_val = DataLoader(
-            ds_val,
-            batch_size=int(args.batch_size),
-            shuffle=False,
-            num_workers=int(args.num_workers),
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=(int(args.num_workers) > 0),
-        )
-        logits_val, y_val = _predict_logits(model, dl_val, device=device)
-        prob_val = sigmoid_np(logits_val)
-        threshold = best_threshold_youden(y_val, prob_val, fallback=0.5)
-        report_val_meta = {"threshold_source_split": str(args.val_split), "threshold_source_n": int(y_val.shape[0])}
-
     logits, y_true = _predict_logits(model, dl, device=device)
     prob = sigmoid_np(logits)
     group = _expand_case_ids(ds)
@@ -150,16 +117,8 @@ def main() -> None:
         "n_neg": int((y_true == 0).sum()),
         "metrics_pre": asdict(compute_binary_metrics(y_true, prob, n_bins=15)),
     }
-    if thr_method == "youden-val":
-        report.update(report_val_meta)
-
-    if threshold is None:
-        threshold = best_threshold_youden(y_true, prob, fallback=0.5)
-        report["threshold_method"] = "youden"
-        report["threshold_selected"] = float(threshold)
-    else:
-        report["threshold_method"] = thr_method if thr_method != "fixed" else "fixed"
-        report["threshold_selected"] = float(threshold)
+    report["threshold_method"] = "fixed"
+    report["threshold_selected"] = float(threshold)
     report["threshold"] = float(threshold)
     report["confusion_pre"] = confusion_at_threshold(y_true, prob, thr=float(threshold))
 

@@ -50,12 +50,10 @@ echo "Seed ${SEED}"
       --seed "${SEED}" \
       --num-workers "${NUM_WORKERS}" \
       --train-split train \
-      --val-split val \
       --test-split test \
       --eval-threshold "${THRESHOLD}" \
       --test-every-epoch \
       --model-selection best \
-      --selection-source val \
       --selection-metric auroc \
       $( [[ "${PER_CLIENT_EVERY_ROUND}" == "1" ]] && echo "--per-client-every-epoch" )
 
@@ -66,8 +64,6 @@ echo "Seed ${SEED}"
       --batch-size "${BATCH_CENTRAL}" \
       --num-workers "${NUM_WORKERS}" \
       --threshold "${THRESHOLD}" \
-      --threshold-method youden-val \
-      --val-split val \
       --per-client
   fi
 
@@ -108,10 +104,7 @@ echo "Seed ${SEED}"
       --test-split test \
       --test-every-round \
       --eval-threshold "${THRESHOLD}" \
-      --threshold-method youden-val \
-      --val-split val \
       --model-selection best \
-      --selection-source val \
       --selection-metric auroc \
       --save-test-pred-npz "${FED_OUT}/${RUN}/test_predictions.npz" \
       $( [[ "${PER_CLIENT_EVERY_ROUND}" == "1" ]] && echo "--per-client-every-round" ) \
@@ -156,9 +149,7 @@ if ckpt_override:
     cfg["backbone"]["checkpoint"] = ckpt_override
 cfg.setdefault("eval", {})
 cfg.setdefault("eval", {}).setdefault("threshold", {})
-cfg["eval"]["threshold"]["method"] = "youden_val"
 cfg["eval"]["threshold"]["fixed"] = float(fixed_thr)
-cfg["eval"]["threshold_use_post"] = False
 cfg["eval"]["selection_use_post"] = False
 if str(save_pred) == "1":
     cfg["eval"]["save_test_pred_npz"] = True

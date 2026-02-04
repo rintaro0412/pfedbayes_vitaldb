@@ -70,7 +70,7 @@ class IOHWindowDataset(Dataset):
       - win_start_sec
       - win_end_sec
       - label (0/1)
-      - split (train/val/test)
+      - split (train/test)
     """
 
     def __init__(

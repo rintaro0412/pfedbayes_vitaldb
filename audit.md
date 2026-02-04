@@ -52,9 +52,9 @@
 ### 閾値（固定）
 - 背景: 全手法で固定閾値（デフォルト 0.5）を使用し、校正は行わない。
 
-### クライアント内 70/10/20 分割（train/val/test）
+### クライアント内 80/20 分割（train/test）
 - 参考論文: 指定なし（実装判断）
-- 背景: 比較可能性を優先し、client内で train/val/test=70/10/20 を固定。
+- 背景: 比較可能性を優先し、client内で train/test=80/20 を固定（val なし）。
 
 ### 損失関数（BCE）
 - 背景: 手法間の公平比較のため、全手法で **BCEWithLogits** に統一。
@@ -108,13 +108,11 @@
    【和訳】分散データからの通信効率的な深層学習
 4. Guo C, et al. (2017). *On Calibration of Modern Neural Networks*. ICML.  
    【和訳】現代のニューラルネットの校正
-5. Youden WJ. (1950). *Index for rating diagnostic tests*. Cancer. DOI: 10.1002/1097-0142(1950)3:1<32::AID-CNCR2820030106>3.0.CO;2-3  
-   【和訳】診断検査の評価指標（Youden指数）
-6. Cho K, et al. (2014). *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation*. EMNLP. DOI: 10.3115/v1/D14-1179  
+5. Cho K, et al. (2014). *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation*. EMNLP. DOI: 10.3115/v1/D14-1179  
    【和訳】RNN Encoder–Decoder による句表現学習
-7. Zhang Q, et al. (2022). *Personalized Federated Learning via Variational Bayesian Inference*. ICML.  
+6. Zhang Q, et al. (2022). *Personalized Federated Learning via Variational Bayesian Inference*. ICML.  
    【和訳】変分ベイズ推論によるパーソナライズドFederated Learning
-8. Hinton GE. (2002). *Training Products of Experts by Minimizing Contrastive Divergence*. Neural Computation.  
+7. Hinton GE. (2002). *Training Products of Experts by Minimizing Contrastive Divergence*. Neural Computation.  
    【和訳】コントラストダイバージェンス最小化によるPoE学習
-9. Choe S, et al. (2021). *Short-Term Event Prediction in the Operating Room (STEP-OP) of Five-Minute Intraoperative Hypotension Using Hybrid Deep Learning*. JMIR Medical Informatics. DOI: 10.2196/31311  
+8. Choe S, et al. (2021). *Short-Term Event Prediction in the Operating Room (STEP-OP) of Five-Minute Intraoperative Hypotension Using Hybrid Deep Learning*. JMIR Medical Informatics. DOI: 10.2196/31311  
    【和訳】ハイブリッド深層学習による術中低血圧（5分先）の短期予測

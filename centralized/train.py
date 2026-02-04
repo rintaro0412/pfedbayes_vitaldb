@@ -132,9 +132,7 @@ def main() -> None:
     ap.add_argument("--save-round-json", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--per-client-every-epoch", action=argparse.BooleanOptionalAction, default=False)
     ap.add_argument("--eval-threshold", type=float, default=0.5, help="Fixed threshold for round-by-round metrics.")
-    ap.add_argument("--val-split", default="val")
     ap.add_argument("--model-selection", default="last", choices=["last", "best"])
-    ap.add_argument("--selection-source", default="val", choices=["val", "test"])
     ap.add_argument("--selection-metric", default="auroc", choices=["auroc", "auprc", "ece", "brier", "nll"])
     args = ap.parse_args()
 
@@ -149,15 +147,12 @@ def main() -> None:
     save_env_snapshot(run_dir, {"args": vars(args)})
 
     train_files = list_npz_files(args.data_dir, args.train_split)
-    val_files = list_npz_files(args.data_dir, args.val_split)
     test_files = list_npz_files(args.data_dir, args.test_split)
     if not train_files:
         raise SystemExit("No train files found. Check --data-dir and split names.")
     train_pos, train_total = scan_label_stats(train_files)
-    val_pos, val_total = scan_label_stats(val_files) if val_files else (0, 0)
     test_pos, test_total = scan_label_stats(test_files) if test_files else (0, 0)
     train_counts = {"n": int(train_total), "n_pos": int(train_pos), "n_neg": int(train_total - train_pos)}
-    val_counts = {"n": int(val_total), "n_pos": int(val_pos), "n_neg": int(val_total - val_pos)} if val_files else None
     test_counts = {"n": int(test_total), "n_pos": int(test_pos), "n_neg": int(test_total - test_pos)}
 
     # Build datasets/dataloaders
@@ -169,18 +164,9 @@ def main() -> None:
         cache_dtype=str(args.cache_dtype),
     )
     ds_test = None
-    ds_val = None
     if test_files and bool(args.test_every_epoch):
         ds_test = WindowedNPZDataset(
             test_files,
-            use_clin="true",
-            cache_in_memory=bool(args.cache_in_memory),
-            max_cache_files=int(args.max_cache_files),
-            cache_dtype=str(args.cache_dtype),
-        )
-    if val_files:
-        ds_val = WindowedNPZDataset(
-            val_files,
             use_clin="true",
             cache_in_memory=bool(args.cache_in_memory),
             max_cache_files=int(args.max_cache_files),
@@ -211,18 +197,9 @@ def main() -> None:
                 prefetch_factor=int(args.prefetch_factor),
                 **dl_common,
             )
-        dl_val = None
-        if ds_val is not None:
-            dl_val = DataLoader(
-                ds_val,
-                shuffle=False,
-                prefetch_factor=int(args.prefetch_factor),
-                **dl_common,
-            )
     else:
         dl_train = DataLoader(ds_train, shuffle=True, **dl_common)
         dl_test = DataLoader(ds_test, shuffle=False, **dl_common) if ds_test is not None else None
-        dl_val = DataLoader(ds_val, shuffle=False, **dl_common) if ds_val is not None else None
 
     model_cfg = IOHModelConfig(
         in_channels=int(getattr(ds_train, "wave_channels", 4) or 4),
@@ -250,15 +227,13 @@ def main() -> None:
         "data_dir": str(args.data_dir),
         "splits": {
             "train": str(args.train_split),
-            "val": str(args.val_split),
             "test": str(args.test_split),
         },
         "n_files": {
             "train": int(len(train_files)),
-            "val": int(len(val_files)),
             "test": int(len(test_files)),
         },
-        "counts": {"train": train_counts, "val": val_counts, "test": test_counts},
+        "counts": {"train": train_counts, "test": test_counts},
         "seed": int(args.seed),
         "hyper": {
             "epochs": int(args.epochs),
@@ -278,7 +253,6 @@ def main() -> None:
             "per_client_every_epoch": bool(args.per_client_every_epoch),
             "eval_threshold": float(args.eval_threshold),
             "model_selection": str(args.model_selection),
-            "selection_source": str(args.selection_source),
             "selection_metric": str(args.selection_metric),
         },
         "model": asdict(model_cfg),
@@ -288,7 +262,8 @@ def main() -> None:
     history_rows = []
     last_path = None
     best_path = None
-    best = {"epoch": 0, "metric": None, "source": str(args.selection_source), "metric_name": str(args.selection_metric)}
+    selection_source = "test"
+    best = {"epoch": 0, "metric": None, "source": selection_source, "metric_name": str(args.selection_metric)}
     selection_enabled = str(args.model_selection).lower() == "best"
     per_client_rounds: list[dict[str, Any]] = []
     client_test_files: Dict[str, list[str]] = {}
@@ -342,35 +317,19 @@ def main() -> None:
                         "confusion_pre": confusion_at_threshold(test_y, test_prob, thr=thr),
                     },
                 )
-        if dl_val is not None:
-            val_logits, val_y = _predict_logits(model, dl_val, device=device)
-            val_prob = sigmoid_np(val_logits)
-            m_val = compute_binary_metrics(val_y, val_prob, n_bins=15)
-            row.update(
-                {
-                    "val_auprc": float(m_val.auprc),
-                    "val_auroc": float(m_val.auroc),
-                    "val_brier": float(m_val.brier),
-                    "val_nll": float(m_val.nll),
-                    "val_ece": float(m_val.ece),
-                }
-            )
         history_rows.append(row)
         pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False)
 
         if selection_enabled:
-            source = str(args.selection_source).lower()
             metric_name = str(args.selection_metric).lower()
             metrics = None
-            if source == "val" and dl_val is not None:
-                metrics = m_val
-            elif source == "test" and dl_test is not None:
+            if dl_test is not None:
                 metrics = m_test
             if metrics is not None:
                 score = float(getattr(metrics, metric_name))
                 prev = best.get("metric")
                 if prev is None or score > float(prev):
-                    best = {"epoch": int(epoch), "metric": float(score), "source": source, "metric_name": metric_name}
+                    best = {"epoch": int(epoch), "metric": float(score), "source": selection_source, "metric_name": metric_name}
                     best_path = run_dir / "checkpoints" / "model_best.pt"
                     torch.save({"model_cfg": asdict(model_cfg), "state_dict": model.state_dict()}, best_path)
 

@@ -172,20 +172,6 @@ def best_threshold_f1(y_true: np.ndarray, prob: np.ndarray, *, grid: int = 101) 
     return float(best_thr)
 
 
-def best_threshold_youden(y_true: np.ndarray, prob: np.ndarray, *, fallback: float = 0.5) -> float:
-    try:
-        from sklearn.metrics import roc_curve
-
-        y = np.asarray(y_true, dtype=np.int64)
-        p = np.asarray(prob, dtype=np.float64)
-        fpr, tpr, thr = roc_curve(y, p)
-        j = tpr - fpr
-        idx = int(np.nanargmax(j))
-        return float(thr[idx])
-    except Exception:
-        return float(fallback)
-
-
 @dataclass(frozen=True)
 class BinaryMetrics:
     n: int

@@ -79,8 +79,8 @@ VitalDB を用いた IOH（術中低血圧）予測パイプライン
 - クライアントは `opname` と `optype` を用いて決定し、部署（department）と結合してクライアントIDを作る。
 - `opname` の症例数が閾値未満の場合は `optype` にフォールバックする。
 - 症例数が少ないクライアントは部署内で `OtherSurgery` にまとめる（dept_pool）。
-- クライアント内で train/val/test = 70/10/20 に分割し、正例数を考慮して層化する。
-- 分割後に、各 split の正例イベント数が 10 未満のクライアントは除外する。
+- クライアント内で train/test = 80/20（val なし）に分割し、正例数を考慮して層化する。
+- 分割後に、各 split（train/test）の正例イベント数が 10 未満のクライアントは除外する。
 - これにより部署や術式に依存した分布差が生まれ、非IID性を確保する。
 
 根拠:
@@ -101,7 +101,7 @@ VitalDB を用いた IOH（術中低血圧）予測パイプライン
 [ scripts/build_dataset.py ]
         |
         v
-[ federated_data/<client>/train|val|test/*.npz ]
+[ federated_data/<client>/train|test/*.npz ]
         |
         +--> [ centralized/train.py ] -> [ centralized/eval.py ]
         |
@@ -144,7 +144,7 @@ $$
 L_{BCE} = -\{w y \log(\sigma(z)) + (1-y)\log(1-\sigma(z))\}
 $$
 
-- 評価は `centralized/eval.py` を用い、`youden-val`（val 由来のしきい値）または固定しきい値 0.5 で評価する。
+- 評価は `centralized/eval.py` を用い、固定しきい値 0.5 で評価する。
 
 根拠:
 - `centralized/train.py`
@@ -153,7 +153,7 @@ $$
 ### 3.3 Local
 - クライアントごとに独立にモデルを学習し、集約しない。
 - 損失はクライアントごとの重み付き BCEWithLogits。
-- しきい値は既定で `youden-val`（val が無い場合は 0.5）。
+- しきい値は固定しきい値 0.5。
 
 根拠:
 - `scripts/train_local.py`
@@ -168,7 +168,7 @@ $$
 W^{(t+1)} = \sum_{k=1}^K \frac{n_k}{\sum_j n_j} W_k^{(t+1)}
 $$
 
-- 評価は `youden-val` を基本とし、val がない場合は固定しきい値 0.5 にフォールバックする。
+- 評価は固定しきい値 0.5。
 
 根拠:
 - `federated/server.py`
@@ -212,7 +212,7 @@ $$
 
 ### 4.1 共通データ設定
 - `data_dir`: `federated_data`
-- split 名: `train`, `val`, `test`
+- split 名: `train`, `test`
 
 根拠:
 - `configs/feduab.yaml`
@@ -227,7 +227,6 @@ $$
 - num_workers: 32
 - min_client_examples: 10
 - eval_threshold: 0.5
-- threshold_method: youden-val
 
 根拠:
 - `configs/feduab.yaml`
@@ -247,7 +246,7 @@ $$
 - batch_size: 256
 - lr: 0.001
 - weight_decay: 0.0001
-- 評価: `centralized/eval.py` で `threshold_method=youden-val`
+- 評価: `centralized/eval.py` で固定しきい値 0.5
 
 根拠:
 - `centralized/train.py`
@@ -271,7 +270,7 @@ $$
 - batch_size: 256
 - lr: 0.001
 - weight_decay: 0.0001
-- 評価: `threshold_method=youden-val`、fallback は 0.5
+- 評価: 固定しきい値 0.5
 
 根拠:
 - `federated/server.py`
@@ -302,14 +301,14 @@ $$
 2. データセット生成（`federated_data/` を削除して作り直すので注意）
 `python scripts/build_dataset.py --out-dir federated_data`
 3. Centralized
-`python centralized/train.py --data-dir federated_data --out-dir runs/centralized --run-name seed42 --epochs 100 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --val-split val --test-split test --eval-threshold 0.5 --test-every-epoch --model-selection best --selection-source val --selection-metric auroc`
-`python centralized/eval.py --data-dir federated_data --run-dir runs/centralized/seed42 --split test --batch-size 256 --num-workers 32 --threshold 0.5 --threshold-method youden-val --val-split val --per-client`
+`python centralized/train.py --data-dir federated_data --out-dir runs/centralized --run-name seed42 --epochs 100 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --test-split test --eval-threshold 0.5 --test-every-epoch --model-selection best --selection-metric auroc`
+`python centralized/eval.py --data-dir federated_data --run-dir runs/centralized/seed42 --split test --batch-size 256 --num-workers 32 --threshold 0.5 --per-client`
 4. Local
 `python scripts/train_local.py --data-dir federated_data --out-dir runs/local --run-name seed42 --rounds 100 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --test-split test --eval-threshold 0.5`
 5. FedAvg
-`python federated/server.py --data-dir federated_data --rounds 100 --local-epochs 1 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --test-split test --test-every-round --eval-threshold 0.5 --threshold-method youden-val --val-split val --model-selection best --selection-source val --selection-metric auroc --run-name seed42 --per-client-every-round`
+`python federated/server.py --data-dir federated_data --rounds 100 --local-epochs 1 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --test-split test --test-every-round --eval-threshold 0.5 --model-selection best --selection-metric auroc --run-name seed42 --per-client-every-round`
 6. FedUAB
-`python bayes_federated/feduab_server.py --data-dir federated_data --rounds 100 --local-epochs 1 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --test-split test --val-split val --mc-samples 25 --mc-train 5 --kl-coeff 1e-4 --eval-threshold 0.5 --threshold-method youden-val --run-name seed42 --test-every-round --per-client-every-round`
+`python bayes_federated/feduab_server.py --data-dir federated_data --rounds 100 --local-epochs 1 --batch-size 256 --lr 0.001 --weight-decay 0.0001 --seed 42 --num-workers 32 --train-split train --test-split test --mc-samples 25 --mc-train 5 --kl-coeff 1e-4 --eval-threshold 0.5 --run-name seed42 --test-every-round --per-client-every-round`
 
 根拠:
 - `scripts/build_dataset.py`
@@ -321,20 +320,37 @@ $$
 - `scripts/run_all_feduab.sh`
 
 ## 5. 実験結果
-現時点では本書に反映できる結果は用意できていない。結果が揃い次第、以下の表に追記する。
+FedAvg のみ反映済み。他手法は未反映。
 
-### 5.1 結果表（追記予定）
+### 5.1 指標と集計の定義
+- 予測値は logits を `sigmoid` で 0〜1 の確率に変換したものを使う。
+- AUROC: ROC 曲線の面積（`roc_auc_score`）。
+- AUPRC: PR 曲線の平均適合率（`average_precision_score`）。
+- Brier: (p - y)^2 の平均。
+- NLL: -[y log p + (1-y) log(1-p)] の平均。p は 1e-12 でクリップする。
+- ECE: 0〜1 を 15 分割し、各ビンの「平均予測確率」と「平均正解率」の差の絶対値を、ビン内サンプル比で加重平均する。
+- Accuracy/F1: しきい値で 0/1 に変換して算出する。F1 = 2TP / (2TP + FP + FN)。
+- しきい値: 固定しきい値（`eval_threshold`、既定 0.5）。
+- FedAvg の表は `runs/fedavg/seed42/test_report.json` の `metrics_pre` と `confusion_pre` を使用し、固定しきい値 0.5、`model_selected=best` を前提とする。
+
+根拠:
+- `common/metrics.py`
+- `common/utils.py`
+- `federated/server.py`
+- `runs/fedavg/seed42/test_report.json`
+
+### 5.2 結果表（追記予定）
 
 | 方法 | AUROC | AUPRC | ECE | NLL | Brier | Accuracy | F1 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Centralized | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Local (macro) | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| FedAvg | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| FedAvg | 0.7180378298143884 | 0.6823448931315544 | 0.051831882871412674 | 0.6165872017853549 | 0.2127397005625723 | 0.6447175885279485 | 0.6303288672350792 |
 | FedUAB (global) | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | FedUAB (personalized) | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | FedUAB (ensemble) | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
-### 5.2 期待される結果の傾向（推測です）
+### 5.3 期待される結果の傾向（推測です）
 - Centralized は全体性能（AUROC/AUPRC）が最も高い可能性がある（推測です）。
 - Local はクライアント間のばらつきが大きく、macro 平均は低下しやすい（推測です）。
 - FedAvg は Local より安定するが、非IID性の影響で性能が頭打ちになる可能性がある（推測です）。
@@ -347,7 +363,7 @@ $$
 1. 非IID性の影響で、中央学習と連合学習の差が明確になる可能性がある。特に症例構成が偏るクライアントでは性能低下が起こりやすい。
 2. FedAvg は重み平均のみで分布差を吸収するため、クライアントごとの不確実性や分布の違いを扱いにくい。
 3. FedUAB は分布パラメータの集約を行うため、少数データのクライアントに対してより安定した推定が期待されるが、MC サンプル数や KL 係数の影響で計算コストが増える。
-4. しきい値選択（youden-val）により、評価値が固定しきい値 0.5 より改善する可能性がある。
+4. しきい値は固定 0.5 のため、比較条件は揃うが最適なしきい値とは限らない。
 5. データ生成時の窓長、負例抽出、クライアント削除条件が結果に大きく影響するため、再現性のために `summary.json` と設定の保存が重要である。
 
 根拠:

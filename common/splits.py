@@ -11,8 +11,8 @@ SplitName = Literal["train", "val", "test"]
 
 @dataclass(frozen=True)
 class SplitConfig:
-    train: float = 0.7
-    val: float = 0.1
+    train: float = 0.8
+    val: float = 0.0
     test: float = 0.2
     seed: int = 42
 
@@ -88,4 +88,3 @@ def make_group_splits(
         out.setdefault(cid, "train")
 
     return out
-

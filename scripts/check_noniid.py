@@ -60,7 +60,7 @@ def _chi2_label_test(counts: np.ndarray) -> Dict[str, float]:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Check non-IID across federated clients (label + covariates)")
     ap.add_argument("--data-dir", default="federated_data")
-    ap.add_argument("--splits", default="train,val,test", help="Comma-separated splits to include")
+    ap.add_argument("--splits", default="train,test", help="Comma-separated splits to include")
     ap.add_argument("--out", default=None, help="Optional JSON output path")
     args = ap.parse_args()
 

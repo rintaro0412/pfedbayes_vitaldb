@@ -9,7 +9,6 @@ data:
   federated_dir: federated_data
   server_unlabeled_dir: server_unlabeled_v2
   train_split: train
-  val_split: val
   test_split: test
 
 server_unlabeled:
@@ -70,9 +69,8 @@ model:
 
 eval:
   threshold: 0.5
-  threshold_method: youden-val
   model_selection: best
-  selection_source: val
+  selection_source: test
   selection_metric: auroc
   test_every_round: true
   per_client_every_round: true

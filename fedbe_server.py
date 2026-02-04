@@ -24,7 +24,7 @@ from common.fedbe_ensemble import fedavg_state, sample_teacher_states
 from common.io import ensure_dir, get_git_hash, now_utc_iso, write_json
 from common.ioh_model import IOHModelConfig, IOHNet
 from common.trace import hash_state_dict, l2_diff_state_dict
-from common.metrics import best_threshold_youden, compute_binary_metrics, confusion_at_threshold, sigmoid_np
+from common.metrics import compute_binary_metrics, confusion_at_threshold, sigmoid_np
 from common.utils import calc_comprehensive_metrics, set_seed
 from datasets.unlabeled_dataset import UnlabeledNPZDataset
 from federated.client import LocalTrainConfig, train_one_client
@@ -214,7 +214,6 @@ def main() -> None:
     data_cfg = cfg.get("data", {})
     fed_dir = str(data_cfg.get("federated_dir", "federated_data"))
     train_split = str(data_cfg.get("train_split", "train"))
-    val_split = str(data_cfg.get("val_split", "val"))
     test_split = str(data_cfg.get("test_split", "test"))
 
     client_ids = list_client_ids(fed_dir)
@@ -294,14 +293,10 @@ def main() -> None:
 
     eval_cfg = cfg.get("eval", {})
     eval_threshold = float(eval_cfg.get("threshold", 0.5))
-    eval_threshold_method = str(eval_cfg.get("threshold_method", "fixed")).lower()
-    if eval_threshold_method == "youden_val":
-        eval_threshold_method = "youden-val"
     teacher_every_round = bool(eval_cfg.get("teacher_every_round", False))
     teacher_max_batches = int(eval_cfg.get("teacher_max_batches", 0))
     teacher_temp = float(eval_cfg.get("teacher_temperature", distill_temp))
     selection_mode = str(eval_cfg.get("model_selection", "last")).lower()
-    selection_source = str(eval_cfg.get("selection_source", "test")).lower()
     selection_metric = str(eval_cfg.get("selection_metric", "ece")).lower()
     per_client_every_round = bool(eval_cfg.get("per_client_every_round", False))
 
@@ -381,24 +376,6 @@ def main() -> None:
         )
 
     test_files = list_npz_files(fed_dir, test_split)
-    val_files = list_npz_files(fed_dir, val_split)
-    dl_val = None
-    if val_files:
-        ds_val = WindowedNPZDataset(
-            val_files,
-            use_clin="true",
-            cache_in_memory=bool(train_cfg.get("cache_in_memory", False)),
-            max_cache_files=int(train_cfg.get("max_cache_files", 32)),
-            cache_dtype=str(train_cfg.get("cache_dtype", "float32")),
-        )
-        dl_val = DataLoader(
-            ds_val,
-            batch_size=int(train_cfg.get("batch_size", 64)),
-            shuffle=False,
-            num_workers=int(train_cfg.get("num_workers", 0)),
-            pin_memory=(device.type == "cuda"),
-            persistent_workers=(int(train_cfg.get("num_workers", 0)) > 0),
-        )
     dl_test = None
     if test_files:
         ds_test = WindowedNPZDataset(
@@ -437,7 +414,6 @@ def main() -> None:
 
     rounds = int(train_cfg.get("rounds", 1))
     prev_after_hash: str | None = None
-    warned_no_val_threshold = False
     for rnd in range(1, rounds + 1):
         print(f"\n[round {rnd}/{rounds}]")
 
@@ -745,21 +721,6 @@ def main() -> None:
             prob = sigmoid_np(logits)
             metrics_pre = compute_binary_metrics(y_true, prob, n_bins=15)
             thr = float(eval_threshold)
-            thr_method = str(eval_threshold_method)
-            if thr_method == "youden":
-                thr = best_threshold_youden(y_true, prob, fallback=float(eval_threshold))
-            elif thr_method == "youden-val":
-                if dl_val is not None:
-                    val_logits, val_y = _predict_logits(student, dl_val, device=device)
-                    val_prob = sigmoid_np(val_logits)
-                    thr = best_threshold_youden(val_y, val_prob, fallback=float(eval_threshold))
-                else:
-                    if not warned_no_val_threshold:
-                        print("[warn] threshold_method=youden-val but no val files found; using fixed threshold.")
-                        warned_no_val_threshold = True
-                    thr_method = "fixed"
-            else:
-                thr_method = "fixed"
             metrics = calc_comprehensive_metrics(y_true, prob, threshold=float(thr))
             row.update({f"test_{k}": float(v) for k, v in metrics.items()})
             metrics_csv_path.write_text(
@@ -776,7 +737,7 @@ def main() -> None:
                     "n_neg": int(metrics_pre.n_neg),
                     "metrics_pre": asdict(metrics_pre),
                     "threshold": float(thr),
-                    "threshold_method": str(thr_method),
+                    "threshold_method": "fixed",
                     "metrics_threshold": metrics,
                     "confusion_pre": confusion_at_threshold(y_true, prob, thr=float(thr)),
                 },
@@ -805,15 +766,7 @@ def main() -> None:
                     logits_c, y_c = _predict_logits(student, dl_c, device=device)
                     prob_c = sigmoid_np(logits_c)
                     m_c = compute_binary_metrics(y_c, prob_c, n_bins=15)
-                    if thr_method == "youden":
-                        thr_c = best_threshold_youden(y_c, prob_c, fallback=float(eval_threshold))
-                        thr_c_method = "youden"
-                    elif thr_method == "youden-val":
-                        thr_c = float(thr)
-                        thr_c_method = "youden-val"
-                    else:
-                        thr_c = float(eval_threshold)
-                        thr_c_method = "fixed"
+                    thr_c = float(thr)
                     m_thr = calc_comprehensive_metrics(y_c, prob_c, threshold=float(thr_c))
                     row_c = {
                         "round": int(rnd),
@@ -828,7 +781,7 @@ def main() -> None:
                         "nll": float(m_c.nll),
                         "ece": float(m_c.ece),
                         "threshold": float(thr_c),
-                        "threshold_method": str(thr_c_method),
+                        "threshold_method": "fixed",
                         "accuracy": float(m_thr.get("accuracy", float("nan"))),
                         "f1": float(m_thr.get("f1", float("nan"))),
                         "sensitivity": float(m_thr.get("sensitivity", float("nan"))),
@@ -846,19 +799,9 @@ def main() -> None:
                     write_json(run_dir / "round_client_metrics.json", per_client_rounds)
 
             if selection_mode == "best":
-                sel_metrics = None
-                if selection_source == "test":
-                    sel_metrics = metrics_pre
-                elif selection_source == "val":
-                    if dl_val is not None:
-                        val_logits, val_y = _predict_logits(student, dl_val, device=device)
-                        val_prob = sigmoid_np(val_logits)
-                        sel_metrics = compute_binary_metrics(val_y, val_prob, n_bins=15)
-                    else:
-                        print("[warn] selection_source=val but no val files found; skipping model selection.")
                 metric_val = None
-                if sel_metrics is not None and hasattr(sel_metrics, selection_metric):
-                    metric_val = getattr(sel_metrics, selection_metric)
+                if hasattr(metrics_pre, selection_metric):
+                    metric_val = getattr(metrics_pre, selection_metric)
                 if metric_val is not None:
                     better = False
                     if best["metric"] is None:
@@ -902,18 +845,6 @@ def main() -> None:
                 prob = np.concatenate(prob_all, axis=0)
                 m_pre = compute_binary_metrics(y_true, prob, n_bins=15)
                 thr = float(eval_threshold)
-                thr_method = str(eval_threshold_method)
-                if thr_method == "youden":
-                    thr = best_threshold_youden(y_true, prob, fallback=float(eval_threshold))
-                elif thr_method == "youden-val":
-                    if dl_val is not None:
-                        val_logits, val_y = _predict_logits(student, dl_val, device=device)
-                        val_prob = sigmoid_np(val_logits)
-                        thr = best_threshold_youden(val_y, val_prob, fallback=float(eval_threshold))
-                    else:
-                        thr_method = "fixed"
-                else:
-                    thr_method = "fixed"
                 m_thr = calc_comprehensive_metrics(y_true, prob, threshold=float(thr))
                 teacher_metrics_csv.write_text(
                     teacher_metrics_csv.read_text(encoding="utf-8")
@@ -929,7 +860,7 @@ def main() -> None:
                         "n_neg": int(m_pre.n_neg),
                         "metrics_pre": asdict(m_pre),
                         "threshold": float(thr),
-                        "threshold_method": str(thr_method),
+                        "threshold_method": "fixed",
                         "metrics_threshold": m_thr,
                         "confusion_pre": confusion_at_threshold(y_true, prob, thr=float(thr)),
                     },
@@ -952,21 +883,6 @@ def main() -> None:
         prob = sigmoid_np(logits)
         metrics_pre = compute_binary_metrics(y_true, prob, n_bins=15)
         thr = float(eval_threshold)
-        thr_method = str(eval_threshold_method)
-        if thr_method == "youden":
-            thr = best_threshold_youden(y_true, prob, fallback=float(eval_threshold))
-        elif thr_method == "youden-val":
-            if dl_val is not None:
-                val_logits, val_y = _predict_logits(final_model, dl_val, device=device)
-                val_prob = sigmoid_np(val_logits)
-                thr = best_threshold_youden(val_y, val_prob, fallback=float(eval_threshold))
-            else:
-                if not warned_no_val_threshold:
-                    print("[warn] threshold_method=youden-val but no val files found; using fixed threshold.")
-                    warned_no_val_threshold = True
-                thr_method = "fixed"
-        else:
-            thr_method = "fixed"
         metrics = calc_comprehensive_metrics(y_true, prob, threshold=float(thr))
         write_json(
             run_dir / "test_report.json",
@@ -974,7 +890,7 @@ def main() -> None:
                 "n": int(len(y_true)),
                 "metrics_pre": asdict(metrics_pre),
                 "threshold": float(thr),
-                "threshold_method": str(thr_method),
+                "threshold_method": "fixed",
                 "metrics_threshold": metrics,
                 "confusion_pre": confusion_at_threshold(y_true, prob, thr=float(thr)),
             },
@@ -1006,15 +922,7 @@ def main() -> None:
             logits_c, y_c = _predict_logits(final_model, dl, device=device)
             prob_c = sigmoid_np(logits_c)
             m_c = compute_binary_metrics(y_c, prob_c, n_bins=15)
-            if thr_method == "youden":
-                thr_c = best_threshold_youden(y_c, prob_c, fallback=float(eval_threshold))
-                thr_c_method = "youden"
-            elif thr_method == "youden-val":
-                thr_c = float(thr)
-                thr_c_method = "youden-val"
-            else:
-                thr_c = float(eval_threshold)
-                thr_c_method = "fixed"
+            thr_c = float(thr)
             m_thr = calc_comprehensive_metrics(y_c, prob_c, threshold=float(thr_c))
             row_c = {
                 "client_id": str(cid),
@@ -1028,7 +936,7 @@ def main() -> None:
                 "nll": float(m_c.nll),
                 "ece": float(m_c.ece),
                 "threshold": float(thr_c),
-                "threshold_method": str(thr_c_method),
+                "threshold_method": "fixed",
                 "accuracy": float(m_thr.get("accuracy", float("nan"))),
                 "f1": float(m_thr.get("f1", float("nan"))),
                 "sensitivity": float(m_thr.get("sensitivity", float("nan"))),

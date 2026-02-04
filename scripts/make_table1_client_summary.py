@@ -67,7 +67,7 @@ def main() -> None:
     ap.add_argument("--data-dir", default="federated_data")
     ap.add_argument("--noniid-json", default="tmp_noniid_report.json")
     ap.add_argument("--summary-json", default="federated_data/summary.json")
-    ap.add_argument("--splits", default="train,val,test")
+    ap.add_argument("--splits", default="train,test")
     ap.add_argument("--split-unit", default="case", help="Split unit label to record in table (default=case)")
     ap.add_argument("--out-csv", default="outputs/table1_client_summary.csv")
     ap.add_argument("--out-json", default="outputs/table1_client_summary.json")

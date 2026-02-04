@@ -14,7 +14,7 @@ Shim et al., 2025 (Medicina) に「できるだけ」合わせて学習用セグ
 - 「心拍周期の生理範囲」の具体閾値は本文に明示されていないため、デフォルトとして
   0.3〜2.0 秒（= 30〜200 bpm 相当）を採用する（引数で変更可）
 - 入力波形は ABP/ECG/PPG/ETCO2 の 4 波形（Shim 論文に合わせる）
-- 本リポジトリの federated 学習のため、client 分割と train/val/test=70/10/20 を採用
+- 本リポジトリの federated 学習のため、client 分割と train/test=80/20（val なし）を採用
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ FILE_EXTENSION = '.csv.gz'
 _COMPRESS_ENV = os.environ.get("BUILD_DATASET_COMPRESS", "1").strip().lower()
 USE_COMPRESSED = _COMPRESS_ENV in ("1", "true", "yes")
 
-_DEFAULT_WORKERS = min(os.cpu_count() or 4, 32)
+_DEFAULT_WORKERS = min(os.cpu_count() or 4, 14)
 _ENV_WORKERS = os.environ.get("BUILD_DATASET_WORKERS")
 if _ENV_WORKERS:
     try:
@@ -56,7 +56,9 @@ if _ENV_WORKERS:
         NUM_WORKERS = _DEFAULT_WORKERS
 else:
     NUM_WORKERS = _DEFAULT_WORKERS
-SPLIT_RATIOS = {'train': 0.7, 'val': 0.1, 'test': 0.2}
+SPLIT_RATIOS = {'train': 0.8, 'val': 0.0, 'test': 0.2}
+ALL_SPLITS = ("train", "val", "test")
+ACTIVE_SPLITS = tuple(k for k in ALL_SPLITS if float(SPLIT_RATIOS.get(k, 0.0)) > 0.0)
 RANDOM_SEED = 42
 
 FS = 100  # Hz (download で 100Hz 化済みを想定)
@@ -153,16 +155,16 @@ def stratified_split_by_pos(df_client, *, pos_by_case: Dict[int, int], seed: int
         return robust_split(df_client, seed=int(seed))
 
     targets_cases = {"train": n_train, "val": n_val, "test": n_test}
-    raw_targets = {k: float(total_pos) * float(SPLIT_RATIOS.get(k, 0.0)) for k in ("train", "val", "test")}
-    target_pos = {k: 0 for k in ("train", "val", "test")}
-    for k in ("train", "val", "test"):
+    raw_targets = {k: float(total_pos) * float(SPLIT_RATIOS.get(k, 0.0)) for k in ALL_SPLITS}
+    target_pos = {k: 0 for k in ALL_SPLITS}
+    for k in ALL_SPLITS:
         if targets_cases[k] > 0:
             target_pos[k] = int(raw_targets.get(k, 0.0))
     remainder = int(total_pos) - sum(int(v) for v in target_pos.values())
     if remainder > 0:
         fracs = [
             (raw_targets[k] - float(target_pos[k]), k)
-            for k in ("train", "val", "test")
+            for k in ALL_SPLITS
             if targets_cases[k] > 0
         ]
         fracs.sort(reverse=True)
@@ -179,7 +181,7 @@ def stratified_split_by_pos(df_client, *, pos_by_case: Dict[int, int], seed: int
     for cid, n_pos, _ in cases:
         best_split = None
         best_key = None
-        for split in ("train", "val", "test"):
+        for split in ALL_SPLITS:
             if curr_cases[split] >= targets_cases[split]:
                 continue
             pos_def = int(target_pos[split]) - int(curr_pos[split])
@@ -189,7 +191,7 @@ def stratified_split_by_pos(df_client, *, pos_by_case: Dict[int, int], seed: int
                 best_key = key
                 best_split = split
         if best_split is None:
-            for split in ("train", "val", "test"):
+            for split in ALL_SPLITS:
                 if curr_cases[split] < targets_cases[split]:
                     best_split = split
                     break
@@ -576,7 +578,7 @@ def parse_args() -> argparse.Namespace:
         "--min-client-pos",
         type=int,
         default=10,
-        help="After split, drop clients whose train/val/test positive events are below this (0 to disable).",
+        help="After split, drop clients whose train/test positive events are below this (0 to disable).",
     )
     p.add_argument(
         "--client-scheme",
@@ -945,7 +947,7 @@ def main():
                 for (s, e) in norm_segs:
                     norm_segments_all.append((int(cid), int(s), int(e)))
 
-    # Split by client (train/val/test=70/10/20) with pos_event stratification
+    # Split by client (train/test=80/20, valなし) with pos_event stratification
     split_map: Dict[int, str] = {}
     for client_id, group_df in df_valid.groupby("client_id"):
         train_df, val_df, test_df = stratified_split_by_pos(group_df, pos_by_case=pos_by_case, seed=int(args.seed))
@@ -973,11 +975,11 @@ def main():
         low_pos_clients = {
             cid: counts
             for cid, counts in client_pos_by_split.items()
-            if any(int(counts.get(s, 0)) < min_client_pos for s in ("train", "val", "test"))
+            if any(int(counts.get(s, 0)) < min_client_pos for s in ACTIVE_SPLITS)
         }
         if low_pos_clients:
             excluded_low_pos_clients = {
-                cid: {s: int(counts.get(s, 0)) for s in ("train", "val", "test")}
+                cid: {s: int(counts.get(s, 0)) for s in ACTIVE_SPLITS}
                 for cid, counts in low_pos_clients.items()
             }
             df_valid = df_valid[~df_valid["client_id"].isin(set(low_pos_clients))].copy()
@@ -995,11 +997,11 @@ def main():
             )
             dropped_str = ", ".join(
                 [
-                    f"{cid}(train={cnt.get('train', 0)}, val={cnt.get('val', 0)}, test={cnt.get('test', 0)})"
+                    f"{cid}(" + ", ".join([f"{s}={cnt.get(s, 0)}" for s in ACTIVE_SPLITS]) + ")"
                     for cid, cnt in sorted(excluded_low_pos_clients.items())
                 ]
             )
-            dropped_pos = sum(int(v.get("train", 0)) + int(v.get("val", 0)) + int(v.get("test", 0)) for v in excluded_low_pos_clients.values())
+            dropped_pos = sum(int(v.get(s, 0)) for v in excluded_low_pos_clients.values() for s in ACTIVE_SPLITS)
             print(f"  [drop] below min_client_pos per split: {dropped_str} (pos_events={dropped_pos})")
             print(f"  final clients (after min_client_pos): {len(final_counts)}")
             for cid, cnt in sorted(final_counts.items(), key=lambda kv: kv[1], reverse=True):
@@ -1015,10 +1017,10 @@ def main():
             dropped_str = ", ".join([f"{cid}={cnt}" for cid, cnt in sorted(excluded_small_clients.items())])
             print(f"  min_client_cases: {dropped_str} (cases={dropped})")
         if excluded_low_pos_clients:
-            dropped = sum(int(v.get("train", 0)) + int(v.get("val", 0)) + int(v.get("test", 0)) for v in excluded_low_pos_clients.values())
+            dropped = sum(int(v.get(s, 0)) for v in excluded_low_pos_clients.values() for s in ACTIVE_SPLITS)
             dropped_str = ", ".join(
                 [
-                    f"{cid}(train={cnt.get('train', 0)}, val={cnt.get('val', 0)}, test={cnt.get('test', 0)})"
+                    f"{cid}(" + ", ".join([f"{s}={cnt.get(s, 0)}" for s in ACTIVE_SPLITS]) + ")"
                     for cid, cnt in sorted(excluded_low_pos_clients.items())
                 ]
             )
@@ -1137,7 +1139,7 @@ def main():
     client_pos_events = case_stats.groupby("client_id")["pos_events"].sum().to_dict()
     client_split_pos_events = case_stats.groupby(["client_id", "split"])["pos_events"].sum().to_dict()
     splits_detail: Dict[str, Dict[str, int]] = {}
-    for split in ("train", "val", "test"):
+    for split in ACTIVE_SPLITS:
         ws = written_windows_by_split.get(split, {"pos_windows": 0, "neg_windows": 0})
         splits_detail[split] = {
             "cases": int(split_case_counts.get(split, 0)),
@@ -1150,7 +1152,7 @@ def main():
     for client_id in sorted(client_case_counts.keys()):
         cstat = written_clients.get(client_id, {"cases_written": 0, "pos_windows": 0, "neg_windows": 0, "splits": {}})
         split_stats: Dict[str, Dict[str, int]] = {}
-        for split in ("train", "val", "test"):
+        for split in ACTIVE_SPLITS:
             key = (client_id, split)
             wsplit = cstat.get("splits", {}).get(split, {"cases_written": 0, "pos_windows": 0, "neg_windows": 0})
             split_stats[split] = {
@@ -1172,11 +1174,7 @@ def main():
     summary = {
         "eligible_cases": int(len(df_valid)),
         "clients": {cid: int(count) for cid, count in sorted(final_counts.items())},
-        "splits": {
-            "train": int((df_valid["split"] == "train").sum()),
-            "val": int((df_valid["split"] == "val").sum()),
-            "test": int((df_valid["split"] == "test").sum()),
-        },
+        "splits": {split: int((df_valid["split"] == split).sum()) for split in ACTIVE_SPLITS},
         "splits_detail": splits_detail,
         "clients_detail": clients_detail,
         "pass1_total_pos_events": int(total_pos),

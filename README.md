@@ -65,9 +65,9 @@
 ### 7) 閾値（固定）
 - 背景: 比較の公平性と実装の単純化を優先し、全手法で **固定閾値** を使用
 
-### 8) クライアント内 70/10/20 分割（train/val/test）
+### 8) クライアント内 80/20 分割（train/test）
 - 参考論文: 直接の指定はなし（再現性と比較可能性のための実装判断）
-- 背景: client 内で train/val/test = 70/10/20 の固定分割。
+- 背景: client 内で train/test = 80/20 の固定分割（val なし）。
 
 ## 使うトラック（固定）
 
@@ -110,7 +110,7 @@ python scripts/data_download.py --max-cases 100 --shuffle --seed 42
 
 ### 2) 学習/評価用データセット生成（build_dataset形式）
 
-- 出力: `federated_data/<client_id>/<split>/case_*.npz`（split は train/val/test）
+- 出力: `federated_data/<client_id>/<split>/case_*.npz`（split は train/test）
 - 入力: `clinical_data.csv` と `vitaldb_data/`（`scripts/data_download.py` の出力）
 - split は症例単位で分割し、正例イベント数の比率ができるだけ保たれるように調整します。
 
@@ -139,7 +139,7 @@ python scripts/build_dataset.py \
 さらに `splits_detail` / `clients_detail` に、split 別・クライアント別の症例数と正例イベント数、正例/負例ウィンドウ数を記録します。
 `--out-dir` が既に存在する場合、build_dataset は中身を削除して作り直します。
 `min_client_cases` 未満のクライアントは除外されます（client_scheme によらず適用）。
-分割後、train/val/test の各 split で正例イベント数が `min_client_pos` 未満のクライアントも除外されます（0 で無効化）。
+分割後、train/test の各 split で正例イベント数が `min_client_pos` 未満のクライアントも除外されます（0 で無効化）。
 
 心拍周期の生理範囲（デフォルト 0.3–2.0 秒）を変更したい場合:
 
@@ -184,9 +184,9 @@ python centralized/train.py \
 
 学習後、`runs/centralized/<run_name>/` に以下が保存されます（最終エポックのモデルを使用）:
 
-- `checkpoints/model_best.pt`
-- `val_report.json`（preのみ、固定閾値の confusion 付き）
-- `history.csv`
+- `checkpoints/model_best.pt`（`model_selection=best` の場合）
+- `history.csv`（train_loss と test_*）
+- `round_XXX_test.json`（`--save-round-json` が有効な場合）
 
 ### 4) test評価（固定閾値）
 
@@ -215,7 +215,7 @@ python federated/server.py \
 進捗表示:
 - ラウンド内のクライアント処理は progress bar を表示します（無効化: `--no-progress-bar`）
 - 各クライアントのバッチ進捗も表示したい場合: `--client-progress-bar`
-- `history.csv` には各ラウンドの `train_loss` と `val_*` を記録します（val は val split を指す）
+- `history.csv` には各ラウンドの `train_loss` と `test_*` を記録します
 
 出力は `runs/fedavg/<run_name>/` に保存され、**最終ラウンドのモデル**で `test_report.json` と
 クライアント別の test 指標（`test_report_per_client.json / test_report_per_client.csv`）を生成します。
@@ -236,7 +236,7 @@ python federated/server.py \
 
 FedUAB は **重みが分布（平均・分散）** を持つ BNN をクライアントで学習し、サーバでガウス積（product of Gaussians）
 として集約します。デフォルトは **全層分布化（論文設定）** で、軽量版（head のみ）は `--no-full-bayes` で切り替え可能です。
-初期分散は層ごとに `1/H` で縮小し（`--var-reduction-h`, 既定 `2`）、分散パラメータは `rho`（softplus）を既定で使用します。
+初期分散は層ごとに `1/H` で縮小し（`--var-reduction-h`, 既定 `1`）、分散パラメータは `rho`（softplus）を既定で使用します。
 集約の係数は論文 Eq.(8) に合わせて **`n_k/n` の正規化** を必須とします（`client_weight_mode=samples` と `agg_beta_mode=normalized`）。
 
 ```bash
@@ -318,7 +318,7 @@ python bayes_federated/eval.py \
 pFedBayes の出力は `runs/pfedbayes/<run_name>/` 以下に保存されます:
 - `summary.json`
 - `history.csv`
-- `round_XXX_val_pre.json` / `round_XXX_val.json`
+- `round_XXX_test.json`
 - `round_XXX_clients.json`
 - `clients/round_XXX/client_<id>.pt`（posterior / localized_global）
 - `test_report.json`
@@ -419,15 +419,13 @@ python scripts/aggregate_round_metrics.py \
    【和訳】分散データからの通信効率的な深層学習
 4. Guo C, et al. (2017). *On Calibration of Modern Neural Networks*. ICML.  
    【和訳】現代のニューラルネットの校正
-5. Youden WJ. (1950). *Index for rating diagnostic tests*. Cancer. DOI: 10.1002/1097-0142(1950)3:1<32::AID-CNCR2820030106>3.0.CO;2-3  
-   【和訳】診断検査の評価指標（Youden指数）
-6. Cho K, et al. (2014). *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation*. EMNLP. DOI: 10.3115/v1/D14-1179  
+5. Cho K, et al. (2014). *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation*. EMNLP. DOI: 10.3115/v1/D14-1179  
    【和訳】RNN Encoder–Decoder による句表現学習
-7. Zhang Q, et al. (2022). *Personalized Federated Learning via Variational Bayesian Inference*. ICML.  
+6. Zhang Q, et al. (2022). *Personalized Federated Learning via Variational Bayesian Inference*. ICML.  
    【和訳】変分ベイズ推論によるパーソナライズドFederated Learning
-8. Hinton GE. (2002). *Training Products of Experts by Minimizing Contrastive Divergence*. Neural Computation.  
+7. Hinton GE. (2002). *Training Products of Experts by Minimizing Contrastive Divergence*. Neural Computation.  
    【和訳】コントラストダイバージェンス最小化によるPoE学習
-9. Choe S, et al. (2021). *Short-Term Event Prediction in the Operating Room (STEP-OP) of Five-Minute Intraoperative Hypotension Using Hybrid Deep Learning*. JMIR Medical Informatics. DOI: 10.2196/31311  
+8. Choe S, et al. (2021). *Short-Term Event Prediction in the Operating Room (STEP-OP) of Five-Minute Intraoperative Hypotension Using Hybrid Deep Learning*. JMIR Medical Informatics. DOI: 10.2196/31311  
    【和訳】ハイブリッド深層学習による術中低血圧（5分先）の短期予測
 
 ## TODO（最小構成のため）

@@ -185,7 +185,6 @@ def main() -> None:
 
     data_dir = cfg["data"]["data_dir"]
     train_split = str(cfg["data"]["train_split"])
-    val_split = str(cfg["data"].get("val_split", "val"))
     test_split = str(cfg["data"]["test_split"])
     summary_path = Path(data_dir) / "summary.json"
     dataset_summary = None
@@ -204,16 +203,10 @@ def main() -> None:
         write_json(clients_path, clients)
 
     # Dataset counts
-    val_files = list_npz_files(str(data_dir), val_split)
-    val_fallback = False
-    if not val_files:
-        val_split = train_split
-        val_files = list_npz_files(str(data_dir), val_split)
-        val_fallback = True
-    splits = {"train": train_split, "val": val_split, "test": test_split}
+    splits = {"train": train_split, "test": test_split}
     counts = _dataset_counts(str(data_dir), splits)
     write_json(run_dir / "data_counts.json", counts)
-    write_json(run_dir / "split_info.json", {"splits": splits, "val_fallback_to_train": bool(val_fallback)})
+    write_json(run_dir / "split_info.json", {"splits": splits})
     client_counts = _client_counts(str(data_dir), train_split)
     write_json(run_dir / "client_counts.json", client_counts)
     if dataset_summary:
@@ -270,15 +263,13 @@ def main() -> None:
     eval_cfg = cfg.get("eval", {})
     eval_batch_size = int(eval_cfg.get("batch_size", 128))
     eval_num_workers = int(eval_cfg.get("num_workers", cfg["train"].get("num_workers", 0)))
-    threshold_use_post = bool(eval_cfg.get("threshold_use_post", True))
     threshold_cfg = eval_cfg.get("threshold", {}) if isinstance(eval_cfg.get("threshold", {}), dict) else {}
-    threshold_method = str(threshold_cfg.get("method", "fixed_threshold")).lower()
     test_every_round = bool(eval_cfg.get("test_every_round", False))
     if args.test_every_round is not None:
         test_every_round = bool(args.test_every_round)
     test_files = list_npz_files(str(data_dir), test_split)
     selection_enabled = str(eval_cfg.get("model_selection", "last")).lower() == "best"
-    selection_source = str(eval_cfg.get("selection_source", "val")).lower()
+    selection_source = "test"
     selection_metric = str(eval_cfg.get("selection_metric", "auroc")).lower()
     selection_use_post = bool(eval_cfg.get("selection_use_post", False))
     per_client_every_round = bool(eval_cfg.get("per_client_every_round", False))
@@ -299,30 +290,6 @@ def main() -> None:
     log_client_sim = bool(args.log_client_sim) or bool(cfg.get("run", {}).get("log_client_sim", False))
 
     best = {"round": 0, "metric": None}
-
-    def _select_threshold_from_val(eval_model: BFLModel) -> float | None:
-        if threshold_method != "youden_val":
-            return None
-        if not val_files:
-            print("[WARN] youden_val requested but no val files found; using fixed threshold.")
-            return float(fixed_threshold)
-        rep_val = evaluate_split(
-            model=eval_model,
-            files=val_files,
-            mc_eval=int(cfg["train"]["mc_eval"]),
-            device=device,
-            temperature=None,
-            threshold=None,
-            threshold_method="youden",
-            recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-            fixed_threshold=float(fixed_threshold),
-            threshold_use_post=bool(threshold_use_post),
-            bootstrap_n=0,
-            bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-            batch_size=eval_batch_size,
-            num_workers=eval_num_workers,
-        )
-        return float(rep_val.get("threshold_selected", fixed_threshold))
 
     eval_elapsed_sum = 0.0
     eval_round_count = 0
@@ -475,61 +442,20 @@ def main() -> None:
         )
         if test_every_round and test_files:
             eval_started = time.perf_counter()
-            if threshold_method == "youden":
-                test_report = evaluate_split(
-                    model=eval_model,
-                    files=test_files,
-                    mc_eval=int(cfg["train"]["mc_eval"]),
-                    device=device,
-                    temperature=None,
-                    threshold=None,
-                    threshold_method="youden",
-                    recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                    fixed_threshold=float(fixed_threshold),
-                    threshold_use_post=bool(threshold_use_post),
-                    bootstrap_n=0,
-                    bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-                    batch_size=eval_batch_size,
-                    num_workers=eval_num_workers,
-                )
-                sel_thr = float(test_report.get("threshold_selected", fixed_threshold))
-            elif threshold_method == "youden_val":
-                sel_thr = float(_select_threshold_from_val(eval_model) or fixed_threshold)
-                test_report = evaluate_split(
-                    model=eval_model,
-                    files=test_files,
-                    mc_eval=int(cfg["train"]["mc_eval"]),
-                    device=device,
-                    temperature=None,
-                    threshold=float(sel_thr),
-                    threshold_method="fixed_threshold",
-                    recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                    fixed_threshold=float(fixed_threshold),
-                    threshold_use_post=bool(threshold_use_post),
-                    bootstrap_n=0,
-                    bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-                    batch_size=eval_batch_size,
-                    num_workers=eval_num_workers,
-                )
-                test_report["threshold_selected"] = float(sel_thr)
-                test_report["threshold_method"] = "youden_val"
-            else:
-                test_report = evaluate_split(
-                    model=eval_model,
-                    files=test_files,
-                    mc_eval=int(cfg["train"]["mc_eval"]),
-                    device=device,
-                    temperature=None,
-                    threshold=float(fixed_threshold),
-                    threshold_method="fixed_threshold",
-                    recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                    fixed_threshold=float(fixed_threshold),
-                    threshold_use_post=bool(threshold_use_post),
-                    bootstrap_n=0,
-                    bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-                    batch_size=eval_batch_size,
-                    num_workers=eval_num_workers,
-                )
+            test_report = evaluate_split(
+                model=eval_model,
+                files=test_files,
+                mc_eval=int(cfg["train"]["mc_eval"]),
+                device=device,
+                temperature=None,
+                threshold=float(fixed_threshold),
+                fixed_threshold=float(fixed_threshold),
+                bootstrap_n=0,
+                bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+                batch_size=eval_batch_size,
+                num_workers=eval_num_workers,
+            )
+            sel_thr = float(fixed_threshold)
             write_json(run_dir / f"round_{rnd:03d}_test.json", test_report)
             try:
                 history[-1]["threshold"] = float(sel_thr)
@@ -554,23 +480,15 @@ def main() -> None:
                 postfix["eval_eta"] = _format_seconds(avg_eval * float(eval_total - eval_done))
             round_iter.set_postfix(postfix)
         if selection_enabled:
-            sel_files = test_files if selection_source == "test" else val_files
-            if not sel_files:
-                if selection_source != "test":
-                    print("[WARN] model_selection=best but val files missing; falling back to test.")
-                    sel_files = test_files
-            if sel_files:
+            if test_files:
                 sel_report = evaluate_split(
                     model=eval_model,
-                    files=sel_files,
+                    files=test_files,
                     mc_eval=int(cfg["train"]["mc_eval"]),
                     device=device,
                     temperature=None,
-                    threshold=None,
-                    threshold_method="youden",
-                    recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
+                    threshold=float(fixed_threshold),
                     fixed_threshold=float(fixed_threshold),
-                    threshold_use_post=bool(threshold_use_post),
                     bootstrap_n=0,
                     bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
                     batch_size=eval_batch_size,
@@ -607,10 +525,7 @@ def main() -> None:
                     device=device,
                     temperature=None,
                     threshold=float(sel_thr),
-                    threshold_method="fixed_threshold",
-                    recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                    fixed_threshold=float(fixed_threshold),
-                    threshold_use_post=bool(threshold_use_post),
+                    fixed_threshold=float(sel_thr),
                     bootstrap_n=0,
                     bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
                     batch_size=eval_batch_size,
@@ -725,64 +640,20 @@ def main() -> None:
                 save_pred_path = save_pred_cfg
                 if not Path(save_pred_path).is_absolute():
                     save_pred_path = str(run_dir / save_pred_path)
-        if threshold_method == "youden":
-            test_report = evaluate_split(
-                model=test_model,
-                files=test_files,
-                mc_eval=int(cfg["train"]["mc_eval"]),
-                device=device,
-                temperature=None,
-                threshold=None,
-                threshold_method="youden",
-                recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                fixed_threshold=float(fixed_threshold),
-                threshold_use_post=bool(threshold_use_post),
-                bootstrap_n=int(cfg["eval"]["bootstrap"].get("n_boot", 1000)),
-                bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-                batch_size=eval_batch_size,
-                num_workers=eval_num_workers,
-                save_pred_path=save_pred_path,
-            )
-            sel_thr = float(test_report.get("threshold_selected", fixed_threshold))
-        elif threshold_method == "youden_val":
-            sel_thr = float(_select_threshold_from_val(test_model) or fixed_threshold)
-            test_report = evaluate_split(
-                model=test_model,
-                files=test_files,
-                mc_eval=int(cfg["train"]["mc_eval"]),
-                device=device,
-                temperature=None,
-                threshold=float(sel_thr),
-                threshold_method="fixed_threshold",
-                recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                fixed_threshold=float(fixed_threshold),
-                threshold_use_post=bool(threshold_use_post),
-                bootstrap_n=int(cfg["eval"]["bootstrap"].get("n_boot", 1000)),
-                bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-                batch_size=eval_batch_size,
-                num_workers=eval_num_workers,
-                save_pred_path=save_pred_path,
-            )
-            test_report["threshold_selected"] = float(sel_thr)
-            test_report["threshold_method"] = "youden_val"
-        else:
-            test_report = evaluate_split(
-                model=test_model,
-                files=test_files,
-                mc_eval=int(cfg["train"]["mc_eval"]),
-                device=device,
-                temperature=None,
-                threshold=float(sel_thr),
-                threshold_method="fixed_threshold",
-                recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
-                fixed_threshold=float(sel_thr),
-                threshold_use_post=bool(threshold_use_post),
-                bootstrap_n=int(cfg["eval"]["bootstrap"].get("n_boot", 1000)),
-                bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
-                batch_size=eval_batch_size,
-                num_workers=eval_num_workers,
-                save_pred_path=save_pred_path,
-            )
+        test_report = evaluate_split(
+            model=test_model,
+            files=test_files,
+            mc_eval=int(cfg["train"]["mc_eval"]),
+            device=device,
+            temperature=None,
+            threshold=float(sel_thr),
+            fixed_threshold=float(sel_thr),
+            bootstrap_n=int(cfg["eval"]["bootstrap"].get("n_boot", 1000)),
+            bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+            batch_size=eval_batch_size,
+            num_workers=eval_num_workers,
+            save_pred_path=save_pred_path,
+        )
         test_report["model_selected"] = str(model_sel)
         test_report["best"] = best
         write_json(run_dir / "test_report.json", test_report)
@@ -803,10 +674,7 @@ def main() -> None:
                 device=device,
                 temperature=None,
                 threshold=float(sel_thr),
-                threshold_method="fixed_threshold",
-                recall_target=float(cfg["eval"]["threshold"].get("recall_target", 0.8)),
                 fixed_threshold=float(sel_thr),
-                threshold_use_post=bool(threshold_use_post),
                 bootstrap_n=0,
                 bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
                 batch_size=eval_batch_size,

@@ -30,7 +30,6 @@ from common.eval_summary import build_mode_report, metrics_from_binary, write_ev
 from common.experiment import save_env_snapshot, seed_everything, seed_worker
 from common.io import ensure_dir, get_git_hash, now_utc_iso, write_json
 from common.ioh_model import IOHModelConfig, normalize_model_cfg
-from common.metrics import best_threshold_youden
 from common.utils import calc_comprehensive_metrics
 
 
@@ -553,7 +552,6 @@ def main() -> None:
     ap.add_argument("--resume", action=argparse.BooleanOptionalAction, default=bool(_cfg_get(cfg, "run.resume", False)))
 
     ap.add_argument("--train-split", default=_cfg_get(cfg, "data.train_split", "train"))
-    ap.add_argument("--val-split", default=_cfg_get(cfg, "data.val_split", "val"))
     ap.add_argument("--test-split", default=_cfg_get(cfg, "data.test_split", "test"))
     ap.add_argument("--rounds", type=int, default=_cfg_get(cfg, "train.rounds", 100))
     ap.add_argument("--local-epochs", type=int, default=_cfg_get(cfg, "train.local_epochs", 1))
@@ -600,7 +598,6 @@ def main() -> None:
     ap.add_argument("--client-weight-mode", default=_cfg_get(cfg, "agg.client_weight_mode", "samples"), choices=["samples", "uniform"])
 
     ap.add_argument("--eval-threshold", type=float, default=_cfg_get(cfg, "eval.eval_threshold", 0.5), help="Fixed threshold for round-by-round metrics.")
-    ap.add_argument("--threshold-method", default=_cfg_get(cfg, "eval.threshold_method", "fixed"), choices=["fixed", "youden", "youden-val"])
 
     ap.add_argument("--eval-personalized", action=argparse.BooleanOptionalAction, default=bool(_cfg_get(cfg, "eval.eval_personalized", True)))
     ap.add_argument("--eval-global", action=argparse.BooleanOptionalAction, default=bool(_cfg_get(cfg, "eval.eval_global", True)))
@@ -692,7 +689,7 @@ def main() -> None:
         "resume": bool(args.resume),
         "config_path": str(args.config) if args.config else None,
         "data_dir": str(args.data_dir),
-        "splits": {"train": str(args.train_split), "test": str(args.test_split), "val": str(args.val_split)},
+        "splits": {"train": str(args.train_split), "test": str(args.test_split)},
         "seed": int(args.seed),
         "rounds": int(args.rounds),
         "full_bayes": bool(args.full_bayes),
@@ -798,13 +795,6 @@ def main() -> None:
         )
 
     test_files = list_npz_files(args.data_dir, args.test_split)
-    thr_method = str(args.threshold_method).lower()
-    val_files: list[str] = []
-    if thr_method == "youden-val":
-        val_files = list_npz_files(args.data_dir, args.val_split)
-        if not val_files:
-            print("[WARN] youden-val requested but no val files found; falling back to fixed threshold.")
-            thr_method = "fixed"
     client_test_files = list_npz_files_by_client(args.data_dir, args.test_split)
 
     final_client_posteriors: Dict[str, Dict[str, BayesParams]] = {}
@@ -936,20 +926,7 @@ def main() -> None:
                 batch_size=int(args.batch_size),
                 num_workers=int(args.num_workers),
             )
-            if thr_method == "youden":
-                thr = best_threshold_youden(y_true, prob, fallback=float(args.eval_threshold))
-            elif thr_method == "youden-val" and val_files:
-                _, y_val, p_val, _ = _eval_model(
-                    model=eval_model,
-                    files=val_files,
-                    mc_samples=int(args.mc_samples),
-                    device=device,
-                    batch_size=int(args.batch_size),
-                    num_workers=int(args.num_workers),
-                )
-                thr = best_threshold_youden(y_val, p_val, fallback=float(args.eval_threshold))
-            else:
-                thr = float(args.eval_threshold)
+            thr = float(args.eval_threshold)
             metrics_thr = calc_comprehensive_metrics(y_true, prob, threshold=thr, from_logits=False, n_bins=15)
             metrics_csv_path.write_text(
                 metrics_csv_path.read_text(encoding="utf-8")
@@ -981,17 +958,6 @@ def main() -> None:
                 init_rho=(float(args.init_rho) if args.init_rho is not None else None),
                 var_reduction_h=float(args.var_reduction_h),
             )
-            val_y = None
-            val_prob = None
-            if thr_method == "youden-val" and val_files:
-                _, val_y, val_prob, _ = _eval_model(
-                    model=eval_model,
-                    files=val_files,
-                    mc_samples=int(args.mc_samples),
-                    device=device,
-                    batch_size=int(args.batch_size),
-                    num_workers=int(args.num_workers),
-                )
             round_rows = []
             for cid, files in client_test_files.items():
                 if not files:
@@ -1004,12 +970,7 @@ def main() -> None:
                     batch_size=int(args.batch_size),
                     num_workers=int(args.num_workers),
                 )
-                if thr_method == "youden":
-                    thr = best_threshold_youden(y_c, prob_c, fallback=float(args.eval_threshold))
-                elif thr_method == "youden-val" and val_y is not None and val_prob is not None:
-                    thr = best_threshold_youden(val_y, val_prob, fallback=float(args.eval_threshold))
-                else:
-                    thr = float(args.eval_threshold)
+                thr = float(args.eval_threshold)
                 metrics_thr = calc_comprehensive_metrics(y_c, prob_c, threshold=thr, from_logits=False, n_bins=15)
                 row_c = {
                     "round": int(rnd),
@@ -1024,7 +985,7 @@ def main() -> None:
                     "nll": float(metrics_c.get("nll", float("nan"))),
                     "ece": float(metrics_c.get("ece", float("nan"))),
                     "threshold": float(thr),
-                    "threshold_method": str(thr_method),
+                    "threshold_method": "fixed",
                     "accuracy": float(metrics_thr.get("accuracy", float("nan"))),
                     "f1": float(metrics_thr.get("f1", float("nan"))),
                     "sensitivity": float(metrics_thr.get("sensitivity", float("nan"))),

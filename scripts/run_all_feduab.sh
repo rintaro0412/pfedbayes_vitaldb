@@ -22,7 +22,6 @@ ROUNDS_FEDAVG="${ROUNDS_FEDAVG:-100}"
 BATCH_FEDAVG="${BATCH_FEDAVG:-256}"
 NUM_WORKERS="${NUM_WORKERS:-16}"
 THRESHOLD="${THRESHOLD:-0.5}"
-THRESHOLD_METHOD="${THRESHOLD_METHOD:-youden-val}"
 PER_CLIENT_EVERY_ROUND="${PER_CLIENT_EVERY_ROUND:-1}"
 
 # FedUAB defaults (paper-like)
@@ -81,12 +80,10 @@ else
       --seed "${SEED}" \
       --num-workers "${NUM_WORKERS}" \
       --train-split train \
-      --val-split val \
       --test-split test \
       --eval-threshold "${THRESHOLD}" \
       --test-every-epoch \
       --model-selection best \
-      --selection-source val \
       --selection-metric auroc \
       $( [[ "${PER_CLIENT_EVERY_ROUND}" == "1" ]] && echo "--per-client-every-epoch" ) \
       $( [[ "${NO_PROGRESS_BAR}" == "1" ]] && echo "--no-progress-bar" )
@@ -98,8 +95,6 @@ else
       --batch-size "${BATCH_CENTRAL}" \
       --num-workers "${NUM_WORKERS}" \
       --threshold "${THRESHOLD}" \
-      --threshold-method "${THRESHOLD_METHOD}" \
-      --val-split val \
       --per-client
   ) &
   central_pid="$!"
@@ -164,10 +159,7 @@ else
       --test-split test \
       --test-every-round \
       --eval-threshold "${THRESHOLD}" \
-      --threshold-method "${THRESHOLD_METHOD}" \
-      --val-split val \
       --model-selection best \
-      --selection-source val \
       --selection-metric auroc \
       --run-name "${RUN_TAG}" \
       $( [[ "${PER_CLIENT_EVERY_ROUND}" == "1" ]] && echo "--per-client-every-round" ) \
@@ -189,14 +181,12 @@ else
       --num-workers "${NUM_WORKERS}"
       --train-split train
       --test-split test
-      --val-split val
       --mc-samples "${MC_SAMPLES}"
       --mc-train "${MC_TRAIN}"
       --kl-coeff "${KL_COEFF}"
       --param-type "${PARAM_TYPE}"
       --var-reduction-h "${VAR_REDUCTION_H}"
       --eval-threshold "${THRESHOLD}"
-      --threshold-method "${THRESHOLD_METHOD}"
       --run-name "${RUN_TAG}"
     )
     if [[ "${FULL_BAYES}" == "0" ]]; then

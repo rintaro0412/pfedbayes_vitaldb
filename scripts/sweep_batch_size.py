@@ -197,7 +197,7 @@ def main() -> None:
                     f"{py_exec} centralized/train.py "
                     f"--data-dir {data_dir} --out-dir runs/centralized_bs{bs} --run-name seed{seed} "
                     f"--epochs {int(args.epochs)} --batch-size {bs} --seed {seed} "
-                    f"--num-workers {int(args.num_workers)} --train-split train --val-split val --test-split test"
+                    f"--num-workers {int(args.num_workers)} --train-split train --test-split test"
                 )
                 try:
                     _run(cmd)
@@ -211,7 +211,7 @@ def main() -> None:
                     f"{py_exec} federated/server.py "
                     f"--data-dir {data_dir} --out-dir runs/fedavg_bs{bs} --run-name seed{seed} "
                     f"--rounds {int(args.rounds)} --batch-size {bs} --seed {seed} "
-                    f"--num-workers {int(args.num_workers)} --train-split train --val-split val --test-split test "
+                    f"--num-workers {int(args.num_workers)} --train-split train --test-split test "
                     "--test-every-round"
                 )
                 try:

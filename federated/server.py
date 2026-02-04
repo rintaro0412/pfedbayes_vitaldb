@@ -23,7 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from common.io import ensure_dir, get_git_hash, now_utc_iso, write_json
 from common.dataset import WindowedNPZDataset, list_client_ids, list_npz_files, list_npz_files_by_client
 from common.ioh_model import IOHModelConfig, IOHNet, normalize_model_cfg
-from common.metrics import best_threshold_youden, compute_binary_metrics, confusion_at_threshold, sigmoid_np
+from common.metrics import compute_binary_metrics, confusion_at_threshold, sigmoid_np
 from common.experiment import save_env_snapshot
 from common.trace import hash_state_dict, l2_diff_state_dict
 from common.utils import calc_comprehensive_metrics, set_seed
@@ -142,10 +142,7 @@ def main() -> None:
     ap.add_argument("--per-client-every-round", action=argparse.BooleanOptionalAction, default=False)
     ap.add_argument("--save-test-pred-npz", default=None, help="Optional .npz to save per-sample test predictions.")
     ap.add_argument("--eval-threshold", type=float, default=0.5, help="Fixed threshold for round-by-round metrics.")
-    ap.add_argument("--threshold-method", default="fixed", choices=["fixed", "youden", "youden-val"])
-    ap.add_argument("--val-split", default="val")
     ap.add_argument("--model-selection", default="last", choices=["last", "best"])
-    ap.add_argument("--selection-source", default="val", choices=["val", "test"])
     ap.add_argument("--selection-metric", default="auroc", choices=["auroc", "auprc", "ece", "brier", "nll"])
 
     ap.add_argument("--model-base-channels", type=int, default=32)
@@ -292,32 +289,8 @@ def main() -> None:
     last_state: Dict[str, torch.Tensor] | None = None
 
     test_files = list_npz_files(args.data_dir, args.test_split)
-    thr_method = str(args.threshold_method).lower()
-    val_files = []
-    dl_val = None
-    if thr_method == "youden-val":
-        val_files = list_npz_files(args.data_dir, args.val_split)
-        if val_files:
-            ds_val = WindowedNPZDataset(
-                val_files,
-                use_clin="true",
-                cache_in_memory=bool(args.cache_in_memory),
-                max_cache_files=int(args.max_cache_files),
-                cache_dtype=str(args.cache_dtype),
-            )
-            dl_val = DataLoader(
-                ds_val,
-                batch_size=int(args.batch_size),
-                shuffle=False,
-                num_workers=int(args.num_workers),
-                pin_memory=(device.type == "cuda"),
-                persistent_workers=(int(args.num_workers) > 0),
-            )
-        else:
-            print("[WARN] youden-val requested but no val files found; falling back to fixed threshold.")
-            thr_method = "fixed"
     selection_enabled = str(args.model_selection).lower() == "best"
-    selection_source = str(args.selection_source).lower()
+    selection_source = "test"
     selection_metric = str(args.selection_metric).lower()
     best = {"round": 0, "metric": None, "source": selection_source, "metric_name": selection_metric}
 
@@ -544,14 +517,7 @@ def main() -> None:
                     "test_ece": float(m_test.ece),
                 }
             )
-            if thr_method == "youden":
-                thr = best_threshold_youden(test_y, test_prob, fallback=float(args.eval_threshold))
-            elif thr_method == "youden-val" and dl_val is not None:
-                val_logits, val_y = predict_logits(global_model, dl_val, device=device)
-                val_prob = sigmoid_np(val_logits)
-                thr = best_threshold_youden(val_y, val_prob, fallback=float(args.eval_threshold))
-            else:
-                thr = float(args.eval_threshold)
+            thr = float(args.eval_threshold)
             metrics_thr = calc_comprehensive_metrics(test_y, test_prob, threshold=thr)
             metrics_csv_path.write_text(
                 metrics_csv_path.read_text(encoding="utf-8")
@@ -568,25 +534,17 @@ def main() -> None:
                         "n_neg": int(m_test.n_neg),
                         "metrics_pre": asdict(m_test),
                         "threshold": float(thr),
-                        "threshold_method": str(thr_method),
+                        "threshold_method": "fixed",
                         "metrics_threshold": metrics_thr,
                         "confusion_pre": confusion_at_threshold(test_y, test_prob, thr=thr),
                     },
                 )
             if selection_enabled:
-                sel_metrics = None
-                if selection_source == "test":
-                    sel_metrics = m_test
-                elif selection_source == "val" and dl_val is not None:
-                    val_logits, val_y = predict_logits(global_model, dl_val, device=device)
-                    val_prob = sigmoid_np(val_logits)
-                    sel_metrics = compute_binary_metrics(val_y, val_prob, n_bins=15)
-                if sel_metrics is not None:
-                    score = float(getattr(sel_metrics, selection_metric))
-                    prev = best.get("metric")
-                    if prev is None or score > float(prev):
-                        best = {"round": int(rnd), "metric": float(score), "source": selection_source, "metric_name": selection_metric}
-                        torch.save({"model_cfg": asdict(model_cfg), "state_dict": global_state}, run_dir / "checkpoints" / "model_best.pt")
+                score = float(getattr(m_test, selection_metric))
+                prev = best.get("metric")
+                if prev is None or score > float(prev):
+                    best = {"round": int(rnd), "metric": float(score), "source": selection_source, "metric_name": selection_metric}
+                    torch.save({"model_cfg": asdict(model_cfg), "state_dict": global_state}, run_dir / "checkpoints" / "model_best.pt")
         history.append(row)
         pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False)
         if bool(args.per_client_every_round) and client_test_files:
@@ -612,14 +570,7 @@ def main() -> None:
                 logits_c, y_c = predict_logits(global_model, dl_c, device=device)
                 prob_c = sigmoid_np(logits_c)
                 m_c = compute_binary_metrics(y_c, prob_c, n_bins=15)
-                if thr_method == "youden":
-                    thr = best_threshold_youden(y_c, prob_c, fallback=float(args.eval_threshold))
-                elif thr_method == "youden-val" and dl_val is not None:
-                    val_logits, val_y = predict_logits(global_model, dl_val, device=device)
-                    val_prob = sigmoid_np(val_logits)
-                    thr = best_threshold_youden(val_y, val_prob, fallback=float(args.eval_threshold))
-                else:
-                    thr = float(args.eval_threshold)
+                thr = float(args.eval_threshold)
                 m_thr = calc_comprehensive_metrics(y_c, prob_c, threshold=thr)
                 row_c = {
                     "round": int(rnd),
@@ -634,7 +585,7 @@ def main() -> None:
                     "nll": float(m_c.nll),
                     "ece": float(m_c.ece),
                     "threshold": float(thr),
-                    "threshold_method": str(thr_method),
+                    "threshold_method": "fixed",
                     "accuracy": float(m_thr.get("accuracy", float("nan"))),
                     "f1": float(m_thr.get("f1", float("nan"))),
                     "sensitivity": float(m_thr.get("sensitivity", float("nan"))),
@@ -689,32 +640,7 @@ def main() -> None:
     best_model = IOHNet(model_cfg).to(device)
     ckpt = torch.load(ckpt_path, map_location="cpu")
     best_model.load_state_dict(ckpt["state_dict"], strict=True)
-    if thr_method == "youden":
-        if test_y is None or test_prob is None:
-            ds_test_for_thr = WindowedNPZDataset(
-                test_files,
-                use_clin="true",
-                cache_in_memory=bool(args.cache_in_memory),
-                max_cache_files=int(args.max_cache_files),
-                cache_dtype=str(args.cache_dtype),
-            )
-            dl_test_for_thr = DataLoader(
-                ds_test_for_thr,
-                batch_size=int(args.batch_size),
-                shuffle=False,
-                num_workers=int(args.num_workers),
-                pin_memory=(device.type == "cuda"),
-                persistent_workers=(int(args.num_workers) > 0),
-            )
-            test_logits_thr, test_y = predict_logits(best_model, dl_test_for_thr, device=device)
-            test_prob = sigmoid_np(test_logits_thr)
-        thr = best_threshold_youden(test_y, test_prob, fallback=float(args.eval_threshold))
-    elif thr_method == "youden-val" and dl_val is not None:
-        val_logits, val_y = predict_logits(best_model, dl_val, device=device)
-        val_prob = sigmoid_np(val_logits)
-        thr = best_threshold_youden(val_y, val_prob, fallback=float(args.eval_threshold))
-    else:
-        thr = float(args.eval_threshold)
+    thr = float(args.eval_threshold)
 
     # Evaluate on TEST (global) with fixed threshold/temperature
     ds_test = WindowedNPZDataset(
@@ -752,7 +678,7 @@ def main() -> None:
             "n": int(len(test_y)),
             "metrics_pre": asdict(compute_binary_metrics(test_y, test_prob, n_bins=15)),
             "threshold": float(thr),
-            "threshold_method": str(thr_method),
+            "threshold_method": "fixed",
             "model_selected": str(model_sel),
             "best": best,
             "confusion_pre": confusion_at_threshold(test_y, test_prob, thr=float(thr)),
@@ -792,7 +718,7 @@ def main() -> None:
             "status": "ok",
             "n": int(metrics_pre.n),
                 "threshold": float(thr),
-                "threshold_method": str(thr_method),
+                "threshold_method": "fixed",
                 "metrics_pre": asdict(metrics_pre),
                 "confusion_pre": confusion_at_threshold(y_true, prob, thr=float(thr)),
             }
@@ -810,13 +736,13 @@ def main() -> None:
                 "nll_pre": float(metrics_pre.nll),
                 "ece_pre": float(metrics_pre.ece),
                 "threshold": float(thr),
-                "threshold_method": str(thr_method),
+                "threshold_method": "fixed",
             }
         )
 
     write_json(
         run_dir / "test_report_per_client.json",
-        {"threshold": float(thr), "threshold_method": str(thr_method), "clients": per_client_reports},
+        {"threshold": float(thr), "threshold_method": "fixed", "clients": per_client_reports},
     )
     pd.DataFrame(per_client_rows).to_csv(run_dir / "test_report_per_client.csv", index=False)
 
@@ -839,7 +765,7 @@ def main() -> None:
 
     print("Done.")
     print(f"Run dir: {run_dir}")
-    print(f"Val threshold ({thr_method}): {thr:.3f}")
+    print(f"Fixed threshold: {thr:.3f}")
 
 
 if __name__ == "__main__":
