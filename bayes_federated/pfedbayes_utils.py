@@ -133,6 +133,7 @@ def aggregate_bayes_params(
         raise ValueError("No local params to aggregate.")
     if float(server_beta) != 1.0:
         raise ValueError("pFedBayes aggregation requires server_beta=1.0 for strict paper alignment.")
+    beta = float(server_beta)
     w = _normalize_weights(weights, dtype=prev.weight_mu.dtype, device=prev.weight_mu.device)
     ptype = normalize_param_type(param_type)
 
@@ -147,31 +148,18 @@ def aggregate_bayes_params(
         dim=0,
     )
 
-    w_broadcast = w.view(-1, *([1] * (weight_mu_stack.dim() - 1)))
-    weight_mu = (w_broadcast * weight_mu_stack).sum(dim=0)
-    bias_mu = (w_broadcast * bias_mu_stack).sum(dim=0)
+    w_broadcast_w = w.view(-1, *([1] * (weight_mu_stack.dim() - 1)))
+    w_broadcast_b = w.view(-1, *([1] * (bias_mu_stack.dim() - 1)))
+    weight_mu = (w_broadcast_w * weight_mu_stack).sum(dim=0)
+    bias_mu = (w_broadcast_b * bias_mu_stack).sum(dim=0)
 
-    w_var_weight = w.view(-1, *([1] * (weight_var_stack.dim() - 1)))
-    weight_var = (w_var_weight * (weight_var_stack + (weight_mu_stack - weight_mu) ** 2)).sum(dim=0)
-    bias_var = (w_var_weight * (bias_var_stack + (bias_mu_stack - bias_mu) ** 2)).sum(dim=0)
+    w_var_weight_w = w.view(-1, *([1] * (weight_var_stack.dim() - 1)))
+    w_var_weight_b = w.view(-1, *([1] * (bias_var_stack.dim() - 1)))
+    weight_var = (w_var_weight_w * (weight_var_stack + (weight_mu_stack - weight_mu) ** 2)).sum(dim=0)
+    bias_var = (w_var_weight_b * (bias_var_stack + (bias_mu_stack - bias_mu) ** 2)).sum(dim=0)
 
     new_weight_logvar = _var_to_param(weight_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
     new_bias_logvar = _var_to_param(bias_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
-    if beta != 1.0:
-        weight_mu = (1.0 - beta) * prev.weight_mu + beta * weight_mu
-        bias_mu = (1.0 - beta) * prev.bias_mu + beta * bias_mu
-        new_weight_logvar = (1.0 - beta) * prev.weight_logvar + beta * new_weight_logvar
-        new_bias_logvar = (1.0 - beta) * prev.bias_logvar + beta * new_bias_logvar
-        if ptype == "logvar" and (logvar_min is not None or logvar_max is not None):
-            if logvar_min is not None and logvar_max is not None:
-                new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
-                new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min), max=float(logvar_max))
-            elif logvar_min is not None:
-                new_weight_logvar = new_weight_logvar.clamp(min=float(logvar_min))
-                new_bias_logvar = new_bias_logvar.clamp(min=float(logvar_min))
-            elif logvar_max is not None:
-                new_weight_logvar = new_weight_logvar.clamp(max=float(logvar_max))
-                new_bias_logvar = new_bias_logvar.clamp(max=float(logvar_max))
 
     return BayesParams(
         weight_mu=weight_mu.detach().clone(),

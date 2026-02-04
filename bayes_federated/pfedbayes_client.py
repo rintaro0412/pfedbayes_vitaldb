@@ -37,8 +37,6 @@ class PFBayesClientConfig:
     train_backbone: bool = False
     seed: int = 42
     loss_type: str = "bce"
-    focal_gamma: float = 2.0
-    focal_alpha: float = 0.25
     pos_weight: float | None = None
     zeta: float = 1.0
     max_steps: int = 0
@@ -174,8 +172,6 @@ def train_client_pfedbayes(
 
     loss_cfg = LossConfig(
         loss_type=str(cfg.loss_type),
-        focal_gamma=float(cfg.focal_gamma),
-        focal_alpha=float(cfg.focal_alpha),
         pos_weight=cfg.pos_weight,
     )
 

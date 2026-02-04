@@ -1,9 +1,9 @@
 # 監査結果（論文図表データの存在確認）
 
-## 結論
-- (1) A: 予測確率保存 … **NO**
-- (2) B: ラウンド推移 … **NO**
-- (3) 箱ひげ用のクライアント別スコア … **NO**
+## 結論（現行仕様）
+- (1) A: 予測確率保存 … **条件付きでYES**（`save_test_pred_npz` 有効化で保存）
+- (2) B: ラウンド推移 … **YES**（round×client ログ出力）
+- (3) 箱ひげ用のクライアント別スコア … **YES**（round×client から集計可能）
 - (4) 非IID説明用のクライアント要約 … **YES**
 
 ## 参考論文と処理対応（背景つき）
@@ -20,7 +20,7 @@
   - 5分先予測は Shim 論文に準拠。  
   - MAP<=65 の持続によるイベント定義は STEP-OP の定義を参考。  
   - negative 抽出方針は Shim 論文の記述を参照。  
-  - 30秒窓は実装判断（再現性・比較可能性のため固定）。
+  - 60秒窓は実装判断（再現性・比較可能性のため固定）。
 
 ### 入力（ETCO2＋臨床情報）
 - 参考論文: Shim et al., Medicina 2025
@@ -49,85 +49,50 @@
   - Hinton, Neural Computation 2002（PoE概念）  
 - 背景: pFedBayes の変分ベイズ枠組みを再現し、BFLでは PoE 的集約を利用。
 
-### 校正・閾値
-- 参考論文:  
-  - Guo et al., ICML 2017（Temperature scaling）  
-  - Youden, Cancer 1950（Youden 指標）  
-- 背景: val（なければtrain）で温度・閾値を決めて test 固定。
+### 閾値（固定）
+- 背景: 全手法で固定閾値（デフォルト 0.5）を使用し、校正は行わない。
 
-### クライアント内 80/20 分割（valなし）
+### クライアント内 70/10/20 分割（train/val/test）
 - 参考論文: 指定なし（実装判断）
-- 背景: 比較可能性を優先し、client内で train/test=80/20 を固定。
+- 背景: 比較可能性を優先し、client内で train/val/test=70/10/20 を固定。
 
-## 根拠
+### 損失関数（BCE）
+- 背景: 手法間の公平比較のため、全手法で **BCEWithLogits** に統一。
+
+### モデル選択
+- 背景: best 選択は行わず、**最終エポック／最終ラウンド**のモデルを使用。
+
+## 根拠（現行仕様の期待成果物）
 ### (1) A: 予測確率（サンプル単位）
-- `runs/centralized_batch/seed0/eval_test_per_group.csv`
-  - rows: 502
-  - cols: `caseid`, `n`, `n_pos`, `prob_pre_mean`, `prob_pre_max`, `prob_post_mean`, `prob_post_max`
-- `runs/centralized_batch/seed0/eval_test.json`
-  - keys: `started_utc`, `run_dir`, `checkpoint`, `data_dir`, `split`, `n`, `n_pos`, `n_neg`, `metrics_pre`, `temperature`, `metrics_post`, `threshold`, `confusion_pre`, `confusion_post`, `finished_utc`
-- `runs/fedavg_batch/seed0/test_report.json`
-  - keys: `n`, `metrics_pre`, `metrics_post`, `threshold`
-- `runs/pfedbayes/seed0/test_report.json`
-  - keys: `n`, `n_pos`, `n_neg`, `metrics_pre`, `uncertainty`, `metrics_post`, `confusion_pre`, `confusion_post`, `bootstrap`
-  - `uncertainty` keys: `prob_var_mean`, `prob_var_std`, `entropy_mean`, `entropy_std`
-- `runs/outputs/results/logs/artifacts` 配下で `test_predictions.npz` / `*pred*.npz` / `*pred*.csv` を検索したが **該当ファイルなし**
+- **再実行が必要**（旧runは temperature/metrics_post 前提）
+- 期待される成果物（例）:
+  - `runs/fedavg_batch/seed0/test_predictions.npz`
+  - `runs/pfedbayes/seed0/test_predictions.npz`
 
 ### (2) B: ラウンド推移ログ
-- `runs/bfl_batch/seed1/round_001_val_pre.json`
-  - keys: `n`, `n_pos`, `n_neg`, `metrics_pre`, `uncertainty`, `threshold_selected`, `confusion_pre`
-- `runs/bfl_batch/seed1/round_001_val_post.json`
-  - keys: `n`, `n_pos`, `n_neg`, `metrics_pre`, `uncertainty`, `metrics_post`, `threshold_selected`, `confusion_pre`, `confusion_post`
-- `runs/pfedbayes/seed0/round_001_val_pre.json`
-  - keys: `n`, `n_pos`, `n_neg`, `metrics_pre`, `uncertainty`, `threshold_selected`, `confusion_pre`
-- `runs/fedavg_batch/seed0/round_001_clients.json`
-  - top keys: `clients`
-  - clients_len: 12
-  - first_client_keys: `client_id`, `status`, `n_examples`, `avg_loss`, `pos_weight`
-- `runs/centralized_batch/seed0/val_report.json`
-  - keys: `n`, `temperature`, `threshold`, `metrics_pre`, `metrics_post`
+- round×client の評価ログを保存する仕様に変更済み
+- 期待される成果物:
+  - `runs/*/round_client_metrics.csv`
+  - `runs/*/round_XXX_test_per_client.csv`
 
 ### (3) クライアント別スコア（箱ひげ）
-- `runs/fedavg_batch/seed0/test_report_per_client.json`
-  - top keys: `temperature`, `threshold`, `clients`
-  - clients: dict (n_clients: 12)
-  - sample client keys: `client_id`, `status`, `n`, `temperature`, `threshold`, `metrics_pre`, `metrics_post`, `confusion_pre`, `confusion_post`
-- `runs/bfl_batch/seed1/test_report_per_client.json`
-  - top keys: `temperature`, `threshold`, `clients`
-  - clients: dict (n_clients: 12)
-  - sample client keys: `n`, `n_pos`, `n_neg`, `metrics_pre`, `uncertainty`, `metrics_post`, `confusion_pre`, `confusion_post`, `client_id`, `status`
-- `runs/` 配下で `*per_client*.json` を検索した結果、**pFedBayes / Centralized 用の同等ファイルは見つからず**
+- round×client ログから集計可能（`scripts/aggregate_round_metrics.py`）
 
 ### (4) 非IID（opname_optype）説明用のクライアント要約
 - `tmp_noniid_report.json`
   - top keys: `started_utc`, `data_dir`, `splits`, `clients`, `per_client_per_split`, `per_client_pooled`, `case_pos_rate`, `case_n_windows`, `clinical_mean`, `label_chi2_test`, `finished_utc`
   - `per_client_per_split`: dict (n_clients: 12)
     - sample client key: `General_surgery__Biliary_Pancreas`
-    - split keys: `train`, `val`, `test`
+    - split keys: `train`, `test`
     - per-split keys: `n_files`, `n_windows`, `n_pos`, `n_neg`
   - `per_client_pooled`: dict (n_clients: 12)
     - per-client keys: `n_files`, `n_windows`, `n_pos`, `n_neg`, `pos_rate`
   - `clinical_mean`: dict (n_keys: 12)
     - sample value keys: `n_cases`, `mean`
 
-## 不足
-### (1) A: 予測確率保存 … NO
-- 欠けているキー/列:
-  - **y_true**, **prob_mean**, **prob_var / entropy（サンプル単位）**, **case_id**
-- 欠けている方式:
-  - **Central / FedAvg / pFedBayes** すべてで `test_predictions.npz` もしくは同等のサンプル予測ファイルが未確認
-
-### (2) B: ラウンド推移 … NO
-- 欠けているキー/列:
-  - **round ごとの評価指標（loss/AUROC/AUPRC 等）を含む val/test ログ** が **FedAvg/Central** に存在しない
-- 欠けている方式:
-  - **FedAvg / Central** に `round_*_val_pre.json`・`round_*_val_post.json` などの評価ログが未確認（`round_*_clients.json` はあるが評価指標なし）
-
-### (3) 箱ひげ用のクライアント別スコア … NO
-- 欠けているキー/列:
-  - **client_id 付きの test metric** が **pFedBayes / Central** で未確認
-- 欠けている方式:
-- **pFedBayes / Central** に `test_report_per_client.json` 相当のファイルが未確認
+## 不足（再実行が必要）
+- 旧runは temperature/metrics_post 前提のため、**新仕様で再実行**が必要
+- サンプル単位の予測保存は `save_test_pred_npz` を有効化した実行が必要
 
 ## 参考文献
 

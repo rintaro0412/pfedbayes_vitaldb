@@ -42,6 +42,48 @@ def _resolve_checkpoint(run_dir: Path) -> Path:
     raise FileNotFoundError(f"checkpoint not found under {run_dir}/checkpoints")
 
 
+def _extract_state_dict(ckpt: Any) -> Dict[str, torch.Tensor]:
+    if isinstance(ckpt, dict):
+        for key in ("state_dict", "model_state_dict", "model", "net"):
+            val = ckpt.get(key)
+            if isinstance(val, dict) and val and all(torch.is_tensor(v) for v in val.values()):
+                return val
+        if ckpt and all(torch.is_tensor(v) for v in ckpt.values()):
+            return ckpt
+    raise KeyError("state_dict")
+
+
+def _load_model_cfg(run_dir: Path, ckpt: Any) -> Dict[str, Any]:
+    if isinstance(ckpt, dict):
+        for key in ("model_cfg", "model"):
+            val = ckpt.get(key)
+            if isinstance(val, dict) and val:
+                return val
+    meta = run_dir / "meta.json"
+    if meta.exists():
+        try:
+            js = read_json(meta)
+            for key in ("model", "model_cfg"):
+                val = js.get(key)
+                if isinstance(val, dict) and val:
+                    return val
+        except Exception:
+            pass
+    cfg_yaml = run_dir / "config_used.yaml"
+    if cfg_yaml.exists():
+        try:
+            import yaml  # type: ignore
+
+            cfg = yaml.safe_load(cfg_yaml.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                val = cfg.get("model")
+                if isinstance(val, dict) and val:
+                    return val
+        except Exception:
+            pass
+    raise KeyError("model_cfg")
+
+
 def _load_temperature_and_threshold(kind: str, run_dir: Path) -> Tuple[float | None, float | None]:
     kind = str(kind)
     if kind == "ioh":
@@ -168,8 +210,10 @@ def main() -> None:
 
         if str(kind) == "ioh":
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-            model = IOHNet(normalize_model_cfg(ckpt.get("model_cfg", {}))).to(device)
-            model.load_state_dict(ckpt["state_dict"], strict=True)
+            model_cfg = normalize_model_cfg(_load_model_cfg(run_dir, ckpt))
+            state_dict = _extract_state_dict(ckpt)
+            model = IOHNet(model_cfg).to(device)
+            model.load_state_dict(state_dict, strict=True)
             logits, y_true = _predict_logits(model, dl, device=device)
             prob_pre = sigmoid_np(logits)
             out["y_true"] = y_true.astype(np.int64, copy=False)
@@ -194,14 +238,16 @@ def main() -> None:
                 logvar_max = float(bayes.get("logvar_max", logvar_max))
                 full_bayes = bool(bayes.get("full_bayes", full_bayes))
 
+            model_cfg = normalize_model_cfg(_load_model_cfg(run_dir, ckpt))
+            state_dict = _extract_state_dict(ckpt)
             model = BFLModel(
-                normalize_model_cfg(ckpt.get("model_cfg", {})),
+                model_cfg,
                 prior_sigma=float(prior_sigma),
                 logvar_min=float(logvar_min),
                 logvar_max=float(logvar_max),
                 full_bayes=bool(full_bayes),
             )
-            model.load_state_dict(ckpt["state_dict"], strict=True)
+            model.load_state_dict(state_dict, strict=True)
             model = model.to(device)
             pred = mc_predict(
                 model,

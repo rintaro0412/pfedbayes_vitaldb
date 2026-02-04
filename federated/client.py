@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from common.dataset import WindowedNPZDataset, scan_label_stats
-from common.ioh_model import FocalLoss, IOHModelConfig, IOHNet
+from common.ioh_model import IOHModelConfig, IOHNet
 
 
 @dataclass(frozen=True)
@@ -18,9 +18,6 @@ class LocalTrainConfig:
     batch_size: int = 64
     lr: float = 1e-3
     weight_decay: float = 1e-4
-    use_focal: bool = True
-    focal_alpha: float = 0.25
-    focal_gamma: float = 2.0
     pos_weight: float | None = None
     num_workers: int = 0
     cache_in_memory: bool = False
@@ -76,12 +73,8 @@ def train_one_client(
     model.load_state_dict(global_state, strict=True)
     model.train()
 
-    pos_weight = _infer_pos_weight(train_files)
-    if cfg.use_focal:
-        loss_fn = FocalLoss(alpha=float(cfg.focal_alpha), gamma=float(cfg.focal_gamma), reduction="mean")
-    else:
-        pos_weight = float(cfg.pos_weight) if cfg.pos_weight is not None else pos_weight
-        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
+    pos_weight = float(cfg.pos_weight) if cfg.pos_weight is not None else _infer_pos_weight(train_files)
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
 
     opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
     scaler = torch.amp.GradScaler(enabled=(device.type == "cuda"))
@@ -89,6 +82,7 @@ def train_one_client(
 
     total_loss = 0.0
     total_n = 0
+    total_steps = 0
     for ep in range(int(cfg.epochs)):
         iterator = tqdm(
             dl,
@@ -112,6 +106,7 @@ def train_one_client(
             scaler.update()
             total_loss += float(loss.item()) * int(y.shape[0])
             total_n += int(y.shape[0])
+            total_steps += 1
             if show_progress:
                 iterator.set_postfix(loss=f"{total_loss / max(total_n, 1):.4f}")
 
@@ -120,6 +115,7 @@ def train_one_client(
         "client_id": str(client_id),
         "status": "ok",
         "n_examples": int(len(ds)),
+        "n_steps": int(total_steps),
         "avg_loss": float(total_loss / max(total_n, 1)),
         "pos_weight": float(pos_weight),
     }

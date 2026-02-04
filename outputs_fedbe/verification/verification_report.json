@@ -1,0 +1,187 @@
+{
+  "started_utc": "2026-02-03T15:42:57Z",
+  "inputs": {
+    "data_dir": "federated_data",
+    "fedavg_run": "runs/fedavg/seed0",
+    "fedbe_run": "runs/fedbe/seed0",
+    "server_unlabeled_dir": "server_unlabeled_v2"
+  },
+  "checks": {
+    "leakage": {
+      "status": "pass",
+      "details": {
+        "overlap_report": "runs/fedbe/seed0/overlap_report.json",
+        "overlap": {
+          "overlap_val_count": 0,
+          "overlap_test_count": 0,
+          "overlap_val_sample": [],
+          "overlap_test_sample": [],
+          "selected_by_client": {
+            "General_surgery__Biliary_Pancreas": 50,
+            "General_surgery__Colorectal": 38,
+            "General_surgery__Distal_gastrectomy": 27,
+            "General_surgery__Exploratory_laparotomy": 19,
+            "General_surgery__Hepatic": 30,
+            "General_surgery__OtherSurgery": 20,
+            "General_surgery__Others": 16,
+            "General_surgery__Stomach": 18,
+            "Gynecology__Major_resection": 25,
+            "Thoracic_surgery__Lung_lobectomy": 41,
+            "Thoracic_surgery__Lung_wedge_resection": 26,
+            "Thoracic_surgery__Minor_resection": 22,
+            "Thoracic_surgery__Others": 30
+          }
+        },
+        "server_unlabeled_files": 362,
+        "server_unlabeled_unique_caseids": 362,
+        "server_unlabeled_duplicate_caseids": 0
+      }
+    },
+    "threshold_fedavg": {
+      "methods": {
+        "youden-val": 100
+      },
+      "unique": [
+        "youden-val"
+      ]
+    },
+    "threshold_fedbe": {
+      "methods": {
+        "youden-val": 100
+      },
+      "unique": [
+        "youden-val"
+      ]
+    },
+    "same_test_split": {
+      "fedavg_test_split": "test",
+      "fedbe_test_split": "test",
+      "fedavg_data_dir": "federated_data",
+      "fedbe_data_dir": "federated_data"
+    },
+    "fedbe_metrics_summary": {
+      "rounds": 100,
+      "last_round": 100,
+      "auroc_first3_mean": 0.5245822715589248,
+      "auroc_last3_mean": 0.6765875539207702,
+      "auprc_first3_mean": 0.47894105196388304,
+      "auprc_last3_mean": 0.64074890910584,
+      "ece_first3_mean": 0.08035212530030274,
+      "ece_last3_mean": 0.06446761780390821,
+      "nll_first3_mean": 0.7042933174426697,
+      "nll_last3_mean": 0.652107141669721,
+      "brier_first3_mean": 0.2554846584771757,
+      "brier_last3_mean": 0.22773448637464186
+    },
+    "fedavg_metrics_summary": {
+      "rounds": 100,
+      "last_round": 100,
+      "auroc_first3_mean": 0.561050464605637,
+      "auroc_last3_mean": 0.7447211910676486,
+      "auprc_first3_mean": 0.5256681210653893,
+      "auprc_last3_mean": 0.7049661984750365,
+      "ece_first3_mean": 0.1597207176252984,
+      "ece_last3_mean": 0.03128428724353387,
+      "nll_first3_mean": 0.8149759570954457,
+      "nll_last3_mean": 0.5918119068015498,
+      "brier_first3_mean": 0.2956541817011657,
+      "brier_last3_mean": 0.20306513033887366
+    },
+    "global_state_trace": {
+      "status": "pass",
+      "details": {
+        "rounds": 100,
+        "hash_mismatch_count": 0,
+        "client_init_mismatch_count": 0
+      }
+    },
+    "compute_log_fedbe": {
+      "status": "pass",
+      "details": {
+        "rounds": 100,
+        "total_steps": 9400,
+        "client_steps": 5400,
+        "distill_steps": 4000
+      }
+    },
+    "compute_log_fedavg": {
+      "status": "pass",
+      "details": {
+        "rounds": 100,
+        "total_steps": 5400,
+        "client_steps": 5400,
+        "distill_steps": 0
+      }
+    },
+    "teacher_proxy": {
+      "status": "proxy",
+      "details": {
+        "count": 100,
+        "min": 0.0025244224816560745,
+        "max": 0.11577000468969345,
+        "first3_mean": 0.07203635635475318,
+        "last3_mean": 0.011727549135684967
+      }
+    },
+    "teacher_metrics_summary": {
+      "status": "missing"
+    },
+    "distill_effect": {
+      "status": "pass",
+      "details": {
+        "distill_loss_last": 0.0006782742085241188,
+        "distill_loss_first3_mean": 0.00851907283006182,
+        "distill_loss_last3_mean": 0.0006979774175819962,
+        "distill_update_l2_min": 1.790376900597134,
+        "distill_update_l2_max": 5.475050174374541,
+        "global_update_l2_min": 1.790376900597134,
+        "global_update_l2_max": 5.475050174374541
+      }
+    },
+    "noniid": {
+      "status": "pass",
+      "details": {
+        "pos_rate_min": 0.3619763694951665,
+        "pos_rate_max": 0.6314229249011858,
+        "pos_rate_mean": 0.4682739697269255,
+        "label_chi2_test": {
+          "chi2": 433.50185264890376,
+          "df": 12.0,
+          "p_value": 2.9990243599935257e-85
+        }
+      }
+    },
+    "ablation_scan": {
+      "status": "pass",
+      "details": {
+        "scanned_runs": 8,
+        "found_frac": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "found_temperature": [
+          1.0,
+          2.0,
+          4.0
+        ],
+        "missing_frac": [],
+        "missing_temperature": []
+      }
+    },
+    "bootstrap": {
+      "status": "pass",
+      "details": {
+        "out": "outputs/verification/compare_significance.json"
+      }
+    },
+    "round_plot": {
+      "status": "pass",
+      "details": {
+        "out_png": "outputs/verification/round_metrics_plot/round_metrics.png",
+        "out_pdf": "outputs/verification/round_metrics_plot/round_metrics.pdf"
+      }
+    }
+  },
+  "finished_utc": "2026-02-03T15:43:38Z"
+}

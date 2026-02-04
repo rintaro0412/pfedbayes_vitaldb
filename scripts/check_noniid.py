@@ -148,10 +148,19 @@ def main() -> None:
     for c in clients:
         x = np.asarray(clin_by_client[c], dtype=np.float64)
         if x.ndim != 2 or x.shape[0] == 0:
-            clin_summary[c] = {"n_cases": int(x.shape[0]) if x.ndim == 2 else 0, "mean": None}
+            clin_summary[c] = {
+                "n_cases": int(x.shape[0]) if x.ndim == 2 else 0,
+                "mean": None,
+                "std": None,
+            }
             continue
         mu = x.mean(axis=0)
-        clin_summary[c] = {"n_cases": int(x.shape[0]), "mean": {k: float(v) for k, v in zip(CLIN_COLS, mu.tolist())}}
+        sd = x.std(axis=0)
+        clin_summary[c] = {
+            "n_cases": int(x.shape[0]),
+            "mean": {k: float(v) for k, v in zip(CLIN_COLS, mu.tolist())},
+            "std": {k: float(v) for k, v in zip(CLIN_COLS, sd.tolist())},
+        }
 
     counts = np.array([[pooled[c]["n_pos"], pooled[c]["n_neg"]] for c in clients], dtype=np.float64)
     chi2 = _chi2_label_test(counts)

@@ -1,0 +1,8 @@
+{
+  "scenarios": {
+    "A": {
+      "FedAvg": "runs/fedavg/seed0",
+      "FedBE": "runs/fedbe/seed0"
+    }
+  }
+}

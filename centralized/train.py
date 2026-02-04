@@ -19,12 +19,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common.calibration import fit_temperature
 from common.io import ensure_dir, get_git_hash, now_utc_iso, write_json
 from common.dataset import WindowedNPZDataset, list_client_ids, list_npz_files, scan_label_stats
-from common.ioh_model import FocalLoss, IOHModelConfig, IOHNet, normalize_model_cfg
-from common.metrics import best_threshold_youden, compute_binary_metrics, confusion_at_threshold, derived_from_confusion, sigmoid_np
-from common.utils import set_seed
+from common.ioh_model import IOHModelConfig, IOHNet, normalize_model_cfg
+from common.metrics import compute_binary_metrics, confusion_at_threshold, sigmoid_np
+from common.experiment import save_env_snapshot
+from common.utils import calc_comprehensive_metrics, set_seed
 
 
 def _infer_one_epoch(
@@ -101,7 +101,6 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Centralized baseline training (IOH)")
     ap.add_argument("--data-dir", default="federated_data", help="Output directory from scripts/build_dataset.py")
     ap.add_argument("--train-split", default="train")
-    ap.add_argument("--val-split", default="val")
     ap.add_argument("--test-split", default="test")
     ap.add_argument("--out-dir", default="runs/centralized")
     ap.add_argument("--run-name", default=None, help="Optional run directory name")
@@ -132,6 +131,11 @@ def main() -> None:
     ap.add_argument("--test-every-epoch", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--save-round-json", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--per-client-every-epoch", action=argparse.BooleanOptionalAction, default=False)
+    ap.add_argument("--eval-threshold", type=float, default=0.5, help="Fixed threshold for round-by-round metrics.")
+    ap.add_argument("--val-split", default="val")
+    ap.add_argument("--model-selection", default="last", choices=["last", "best"])
+    ap.add_argument("--selection-source", default="val", choices=["val", "test"])
+    ap.add_argument("--selection-metric", default="auroc", choices=["auroc", "auprc", "ece", "brier", "nll"])
     args = ap.parse_args()
 
     set_seed(int(args.seed))
@@ -142,21 +146,18 @@ def main() -> None:
     run_name = args.run_name or f"run_{now_utc_iso().replace(':', '').replace('-', '')}"
     run_dir = ensure_dir(Path(args.out_dir) / run_name)
     ensure_dir(run_dir / "checkpoints")
+    save_env_snapshot(run_dir, {"args": vars(args)})
 
     train_files = list_npz_files(args.data_dir, args.train_split)
     val_files = list_npz_files(args.data_dir, args.val_split)
     test_files = list_npz_files(args.data_dir, args.test_split)
     if not train_files:
         raise SystemExit("No train files found. Check --data-dir and split names.")
-    if not val_files:
-        val_files = train_files
-        args.val_split = args.train_split
-
     train_pos, train_total = scan_label_stats(train_files)
-    val_pos, val_total = scan_label_stats(val_files)
+    val_pos, val_total = scan_label_stats(val_files) if val_files else (0, 0)
     test_pos, test_total = scan_label_stats(test_files) if test_files else (0, 0)
     train_counts = {"n": int(train_total), "n_pos": int(train_pos), "n_neg": int(train_total - train_pos)}
-    val_counts = {"n": int(val_total), "n_pos": int(val_pos), "n_neg": int(val_total - val_pos)}
+    val_counts = {"n": int(val_total), "n_pos": int(val_pos), "n_neg": int(val_total - val_pos)} if val_files else None
     test_counts = {"n": int(test_total), "n_pos": int(test_pos), "n_neg": int(test_total - test_pos)}
 
     # Build datasets/dataloaders
@@ -167,17 +168,19 @@ def main() -> None:
         max_cache_files=int(args.max_cache_files),
         cache_dtype=str(args.cache_dtype),
     )
-    ds_val = WindowedNPZDataset(
-        val_files,
-        use_clin="true",
-        cache_in_memory=bool(args.cache_in_memory),
-        max_cache_files=int(args.max_cache_files),
-        cache_dtype=str(args.cache_dtype),
-    )
     ds_test = None
+    ds_val = None
     if test_files and bool(args.test_every_epoch):
         ds_test = WindowedNPZDataset(
             test_files,
+            use_clin="true",
+            cache_in_memory=bool(args.cache_in_memory),
+            max_cache_files=int(args.max_cache_files),
+            cache_dtype=str(args.cache_dtype),
+        )
+    if val_files:
+        ds_val = WindowedNPZDataset(
+            val_files,
             use_clin="true",
             cache_in_memory=bool(args.cache_in_memory),
             max_cache_files=int(args.max_cache_files),
@@ -200,12 +203,6 @@ def main() -> None:
             prefetch_factor=int(args.prefetch_factor),
             **dl_common,
         )
-        dl_val = DataLoader(
-            ds_val,
-            shuffle=False,
-            prefetch_factor=int(args.prefetch_factor),
-            **dl_common,
-        )
         dl_test = None
         if ds_test is not None:
             dl_test = DataLoader(
@@ -214,10 +211,18 @@ def main() -> None:
                 prefetch_factor=int(args.prefetch_factor),
                 **dl_common,
             )
+        dl_val = None
+        if ds_val is not None:
+            dl_val = DataLoader(
+                ds_val,
+                shuffle=False,
+                prefetch_factor=int(args.prefetch_factor),
+                **dl_common,
+            )
     else:
         dl_train = DataLoader(ds_train, shuffle=True, **dl_common)
-        dl_val = DataLoader(ds_val, shuffle=False, **dl_common)
         dl_test = DataLoader(ds_test, shuffle=False, **dl_common) if ds_test is not None else None
+        dl_val = DataLoader(ds_val, shuffle=False, **dl_common) if ds_val is not None else None
 
     model_cfg = IOHModelConfig(
         in_channels=int(getattr(ds_train, "wave_channels", 4) or 4),
@@ -229,10 +234,11 @@ def main() -> None:
     )
     model = IOHNet(model_cfg).to(device)
 
-    # Loss
+    # Loss (BCE, with optional pos_weight)
     n_pos = max(train_counts["n_pos"], 1)
     n_neg = max(train_counts["n_neg"], 1)
-    loss_fn = FocalLoss(alpha=0.25, gamma=2.0, reduction="mean")
+    pos_weight = float(n_neg) / float(n_pos) if n_pos > 0 else 1.0
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
 
     opt = torch.optim.AdamW(model.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
     scaler = torch.amp.GradScaler(enabled=(device.type == "cuda"))
@@ -259,7 +265,8 @@ def main() -> None:
             "batch_size": int(args.batch_size),
             "lr": float(args.lr),
             "weight_decay": float(args.weight_decay),
-            "use_focal": True,
+            "loss": "bce",
+            "pos_weight": float(pos_weight),
             "log_interval": int(args.log_interval),
             "progress_bar": bool(not args.no_progress_bar),
             "num_workers": int(args.num_workers),
@@ -269,14 +276,20 @@ def main() -> None:
             "test_every_epoch": bool(args.test_every_epoch),
             "save_round_json": bool(args.save_round_json),
             "per_client_every_epoch": bool(args.per_client_every_epoch),
+            "eval_threshold": float(args.eval_threshold),
+            "model_selection": str(args.model_selection),
+            "selection_source": str(args.selection_source),
+            "selection_metric": str(args.selection_metric),
         },
         "model": asdict(model_cfg),
     }
     write_json(run_dir / "run_config.json", run_meta)
 
     history_rows = []
-    best_val_auprc = -1.0
+    last_path = None
     best_path = None
+    best = {"epoch": 0, "metric": None, "source": str(args.selection_source), "metric_name": str(args.selection_metric)}
+    selection_enabled = str(args.model_selection).lower() == "best"
     per_client_rounds: list[dict[str, Any]] = []
     client_test_files: Dict[str, list[str]] = {}
     if bool(args.per_client_every_epoch) and test_files:
@@ -296,18 +309,9 @@ def main() -> None:
             show_progress=not args.no_progress_bar,
         )
 
-        val_logits, val_y = _predict_logits(model, dl_val, device=device)
-        val_prob = sigmoid_np(val_logits)
-        m_val = compute_binary_metrics(val_y, val_prob, n_bins=15)
-
         row = {
             "epoch": int(epoch),
             "train_loss": float(tr_loss),
-            "val_auprc": float(m_val.auprc),
-            "val_auroc": float(m_val.auroc),
-            "val_brier": float(m_val.brier),
-            "val_nll": float(m_val.nll),
-            "val_ece": float(m_val.ece),
         }
         if dl_test is not None:
             test_logits, test_y = _predict_logits(model, dl_test, device=device)
@@ -323,6 +327,8 @@ def main() -> None:
                 }
             )
             if bool(args.save_round_json):
+                thr = float(args.eval_threshold)
+                metrics_thr = calc_comprehensive_metrics(test_y, test_prob, threshold=thr)
                 write_json(
                     run_dir / f"round_{epoch:03d}_test.json",
                     {
@@ -331,23 +337,43 @@ def main() -> None:
                         "n_pos": int(m_test.n_pos),
                         "n_neg": int(m_test.n_neg),
                         "metrics_pre": asdict(m_test),
+                        "threshold": float(thr),
+                        "metrics_threshold": metrics_thr,
+                        "confusion_pre": confusion_at_threshold(test_y, test_prob, thr=thr),
                     },
                 )
+        if dl_val is not None:
+            val_logits, val_y = _predict_logits(model, dl_val, device=device)
+            val_prob = sigmoid_np(val_logits)
+            m_val = compute_binary_metrics(val_y, val_prob, n_bins=15)
+            row.update(
+                {
+                    "val_auprc": float(m_val.auprc),
+                    "val_auroc": float(m_val.auroc),
+                    "val_brier": float(m_val.brier),
+                    "val_nll": float(m_val.nll),
+                    "val_ece": float(m_val.ece),
+                }
+            )
         history_rows.append(row)
         pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False)
 
-        if bool(args.save_round_json):
-            write_json(
-                run_dir / f"round_{epoch:03d}_val.json",
-                {
-                    "epoch": int(epoch),
-                    "train_loss": float(tr_loss),
-                    "n": int(m_val.n),
-                    "n_pos": int(m_val.n_pos),
-                    "n_neg": int(m_val.n_neg),
-                    "metrics_pre": asdict(m_val),
-                },
-            )
+        if selection_enabled:
+            source = str(args.selection_source).lower()
+            metric_name = str(args.selection_metric).lower()
+            metrics = None
+            if source == "val" and dl_val is not None:
+                metrics = m_val
+            elif source == "test" and dl_test is not None:
+                metrics = m_test
+            if metrics is not None:
+                score = float(getattr(metrics, metric_name))
+                prev = best.get("metric")
+                if prev is None or score > float(prev):
+                    best = {"epoch": int(epoch), "metric": float(score), "source": source, "metric_name": metric_name}
+                    best_path = run_dir / "checkpoints" / "model_best.pt"
+                    torch.save({"model_cfg": asdict(model_cfg), "state_dict": model.state_dict()}, best_path)
+
         if bool(args.per_client_every_epoch) and client_test_files:
             round_rows = []
             for cid, files in client_test_files.items():
@@ -371,80 +397,58 @@ def main() -> None:
                 logits_c, y_c = _predict_logits(model, dl_c, device=device)
                 prob_c = sigmoid_np(logits_c)
                 m_c = compute_binary_metrics(y_c, prob_c, n_bins=15)
+                thr = float(args.eval_threshold)
+                m_thr = calc_comprehensive_metrics(y_c, prob_c, threshold=thr)
                 row_c = {
                     "round": int(epoch),
                     "client_id": str(cid),
                     "n": int(m_c.n),
                     "n_pos": int(m_c.n_pos),
                     "n_neg": int(m_c.n_neg),
+                    "pos_rate": float(m_thr.get("pos_rate", float("nan"))),
                     "auprc": float(m_c.auprc),
                     "auroc": float(m_c.auroc),
                     "brier": float(m_c.brier),
                     "nll": float(m_c.nll),
                     "ece": float(m_c.ece),
+                    "threshold": float(thr),
+                    "accuracy": float(m_thr.get("accuracy", float("nan"))),
+                    "f1": float(m_thr.get("f1", float("nan"))),
+                    "sensitivity": float(m_thr.get("sensitivity", float("nan"))),
+                    "specificity": float(m_thr.get("specificity", float("nan"))),
+                    "ppv": float(m_thr.get("ppv", float("nan"))),
+                    "npv": float(m_thr.get("npv", float("nan"))),
                 }
                 round_rows.append(row_c)
                 per_client_rounds.append(row_c)
             if round_rows:
                 pd.DataFrame(round_rows).to_csv(run_dir / f"round_{epoch:03d}_test_per_client.csv", index=False)
                 pd.DataFrame(per_client_rounds).to_csv(run_dir / "round_client_metrics.csv", index=False)
+                write_json(run_dir / "round_client_metrics.json", per_client_rounds)
 
-        if np.isfinite(m_val.auprc) and float(m_val.auprc) > best_val_auprc:
-            best_val_auprc = float(m_val.auprc)
-            best_path = run_dir / "checkpoints" / "model_best.pt"
-            torch.save({"model_cfg": asdict(model_cfg), "state_dict": model.state_dict()}, best_path)
+        last_path = run_dir / "checkpoints" / "model_last.pt"
+        torch.save({"model_cfg": asdict(model_cfg), "state_dict": model.state_dict()}, last_path)
 
-        tqdm.write(
-            f"[{epoch:03d}] loss={tr_loss:.4f} val_auprc={m_val.auprc:.4f} val_auroc={m_val.auroc:.4f}"
-        )
+        tqdm.write(f"[{epoch:03d}] loss={tr_loss:.4f}")
 
-    if best_path is None:
-        best_path = run_dir / "checkpoints" / "model_last.pt"
-        torch.save({"model_cfg": asdict(model_cfg), "state_dict": model.state_dict()}, best_path)
+    if last_path is None:
+        last_path = run_dir / "checkpoints" / "model_last.pt"
+        torch.save({"model_cfg": asdict(model_cfg), "state_dict": model.state_dict()}, last_path)
 
-    # Fit temperature scaling on VAL (no test peeking)
-    ckpt = torch.load(best_path, map_location="cpu")
-    model = IOHNet(normalize_model_cfg(ckpt.get("model_cfg", {}))).to(device)
-    model.load_state_dict(ckpt["state_dict"], strict=True)
-
-    val_logits, val_y = _predict_logits(model, dl_val, device=device)
-    tfit = fit_temperature(val_logits, val_y, device=str(device), max_iter=100)
-    write_json(run_dir / "temperature.json", {"temperature": float(tfit.temperature), **asdict(tfit)})
-
-    # Choose threshold on raw (uncalibrated) VAL probs
-    val_prob_raw = sigmoid_np(val_logits)
-    val_prob_cal = sigmoid_np(val_logits / float(tfit.temperature))
-    thr = best_threshold_youden(val_y, val_prob_raw, fallback=0.5)
-    write_json(run_dir / "threshold.json", {"threshold": float(thr), "method": "val_youden_raw"})
-
-    # Save final val report (pre/post calibration)
-    m_pre = compute_binary_metrics(val_y, sigmoid_np(val_logits), n_bins=15)
-    m_post = compute_binary_metrics(val_y, val_prob_cal, n_bins=15)
-    write_json(
-        run_dir / "val_report.json",
-        {
-            "n": int(len(val_y)),
-            "temperature": float(tfit.temperature),
-            "threshold": float(thr),
-            "metrics_pre": asdict(m_pre),
-            "metrics_post": asdict(m_post),
-        },
-    )
+    thr = float(args.eval_threshold)
 
     run_meta["finished_utc"] = now_utc_iso()
     run_meta["artifacts"] = {
-        "best_checkpoint": str(best_path),
+        "last_checkpoint": str(last_path),
+        "best_checkpoint": str(best_path) if best_path is not None else None,
         "history_csv": str(run_dir / "history.csv"),
-        "temperature_json": str(run_dir / "temperature.json"),
-        "threshold_json": str(run_dir / "threshold.json"),
-        "val_report_json": str(run_dir / "val_report.json"),
+        "best": best,
     }
     write_json(run_dir / "run_config.json", run_meta)
 
     print("Done.")
     print(f"Run dir: {run_dir}")
-    print(f"Best checkpoint: {best_path}")
-    print(f"Val temperature: {tfit.temperature:.4f}, threshold: {thr:.3f}")
+    print(f"Fixed threshold: {thr:.3f}")
 
 
 if __name__ == "__main__":

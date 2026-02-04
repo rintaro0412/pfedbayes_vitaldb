@@ -1,6 +1,6 @@
 run:
   out_dir: runs/pfedbayes
-  run_name: seed0
+  run_name: pfed_zeta0.001_nsample
   resume: false
 
 seed: 0
@@ -31,15 +31,15 @@ bayes:
   init_rho: -2.5
 
 train:
-  rounds: 10
+  rounds: 100
   local_epochs: 1
   batch_size: 256
   lr_q: 0.001
   lr_w: 0.001
   weight_decay: 0.0001
-  num_workers: 8
-  mc_train: 10
-  mc_eval: 50
+  num_workers: 64
+  mc_train: 5
+  mc_eval: 20
   grad_clip: 5.0
   grad_clip_w: 0.0
   max_steps: 0
@@ -47,31 +47,30 @@ train:
   w_optim: adamw
 
 pfedbayes:
-  zeta: 1e-4
+  zeta: 0.0001
   server_beta: 1.0
-  weight_mode: uniform  # uniform | n_examples
+  weight_mode: uniform  # uniform | n_examples (paper baseline: uniform)
 
 loss:
-  type: focal
-  focal_gamma: 2.0
-  focal_alpha: 0.25
+  type: bce
+  pos_weight: auto  # auto=client-wise n_neg/n_pos
 
 eval:
   model_selection: best  # best | last
   selection_source: val # val | test
   selection_metric: auroc # auprc | auroc | accuracy
-  selection_use_post: true
+  selection_use_post: false
   threshold_use_post: false
   threshold:
-    method: youden
+    method: youden_val
     recall_target: 0.8
     fixed: 0.5
   calibration:
-    temperature_max_iter: 100
+    temperature_max_iter: 0
   # Save per-sample test predictions/uncertainty (true => run_dir/test_predictions.npz)
   save_test_pred_npz: true
   test_every_round: true
   per_client_every_round: true
   bootstrap:
-    n_boot: 1000
+    n_boot: 100
     seed: 42

@@ -1,0 +1,3 @@
+seed,method,auprc,auroc,ece,brier,nll
+seed0,fedavg,,,,,
+seed0,fedbe,,,,,

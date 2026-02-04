@@ -6,7 +6,6 @@ from typing import Tuple
 import torch
 import torch.nn.functional as F
 
-from common.losses import FocalLoss
 from bayes_federated.bayes_layers import BayesParams
 from bayes_federated.bayes_param import normalize_param_type, param_to_logvar, param_to_var
 
@@ -20,9 +19,7 @@ class BetaConfig:
 
 @dataclass(frozen=True)
 class LossConfig:
-    loss_type: str = "bce"  # bce | focal | weighted_bce
-    focal_gamma: float = 2.0
-    focal_alpha: float = 0.25  # kept for compatibility
+    loss_type: str = "bce"  # bce | weighted_bce
     pos_weight: float | None = None
 
 
@@ -74,10 +71,7 @@ def elbo_loss(
         pos_weight = torch.tensor([float(loss_cfg.pos_weight)], device=logits_flat.device, dtype=logits_flat.dtype)
 
     loss_type = str(loss_cfg.loss_type)
-    if loss_type == "focal":
-        focal = FocalLoss(alpha=float(loss_cfg.focal_alpha), gamma=float(loss_cfg.focal_gamma), pos_weight=pos_weight, reduction="mean")
-        nll = focal(logits_flat, targets_flat)
-    elif loss_type == "weighted_bce":
+    if loss_type == "weighted_bce":
         nll = F.binary_cross_entropy_with_logits(logits_flat, targets_flat, reduction="mean", pos_weight=pos_weight)
     else:
         nll = F.binary_cross_entropy_with_logits(logits_flat, targets_flat, reduction="mean")

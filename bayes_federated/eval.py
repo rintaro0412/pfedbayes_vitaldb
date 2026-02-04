@@ -47,6 +47,9 @@ def mc_predict(
     model.eval()
     prob_mean_list = []
     prob_var_list = []
+    prob_alea_list = []
+    prob_epi_list = []
+    prob_total_var_list = []
     entropy_list = []
     logits_mean_list = []
     prob_mean_cal_list = []
@@ -57,16 +60,27 @@ def mc_predict(
             x = tuple(t.to(device, non_blocking=True) for t in x)
         else:
             x = x.to(device, non_blocking=True)
-        logits_mc = model(x, sample=True, n_samples=int(mc_eval)).squeeze(-1)  # (MC, B)
+        logits_mc = model(x, sample=True, n_samples=int(mc_eval))
+        if logits_mc.dim() == 1:
+            logits_mc = logits_mc.unsqueeze(0).unsqueeze(-1)
+        elif logits_mc.dim() == 2 and logits_mc.shape[-1] == 1:
+            logits_mc = logits_mc.unsqueeze(0)
+        logits_mc = logits_mc.squeeze(-1)  # (MC, B)
         logits_mean = logits_mc.mean(dim=0)
         probs_mc = torch.sigmoid(logits_mc)
         prob_mean = probs_mc.mean(dim=0)
         prob_var = probs_mc.var(dim=0, unbiased=False)
+        prob_alea = (probs_mc * (1.0 - probs_mc)).mean(dim=0)
+        prob_epi = prob_var
+        prob_total_var = prob_alea + prob_epi
         eps = 1e-12
         entropy = -prob_mean * torch.log(prob_mean + eps) - (1.0 - prob_mean) * torch.log(1.0 - prob_mean + eps)
 
         prob_mean_list.append(prob_mean.detach().cpu().numpy())
         prob_var_list.append(prob_var.detach().cpu().numpy())
+        prob_alea_list.append(prob_alea.detach().cpu().numpy())
+        prob_epi_list.append(prob_epi.detach().cpu().numpy())
+        prob_total_var_list.append(prob_total_var.detach().cpu().numpy())
         entropy_list.append(entropy.detach().cpu().numpy())
         logits_mean_list.append(logits_mean.detach().cpu().numpy())
 
@@ -80,6 +94,9 @@ def mc_predict(
     out = {
         "prob_mean": np.concatenate(prob_mean_list, axis=0),
         "prob_var": np.concatenate(prob_var_list, axis=0),
+        "prob_alea": np.concatenate(prob_alea_list, axis=0),
+        "prob_epi": np.concatenate(prob_epi_list, axis=0),
+        "prob_total_var": np.concatenate(prob_total_var_list, axis=0),
         "entropy": np.concatenate(entropy_list, axis=0),
         "logits_mean": np.concatenate(logits_mean_list, axis=0),
     }
@@ -177,6 +194,12 @@ def evaluate_split(
         "uncertainty": {
             "prob_var_mean": float(np.mean(pred["prob_var"])),
             "prob_var_std": float(np.std(pred["prob_var"])),
+            "aleatoric_mean": float(np.mean(pred["prob_alea"])),
+            "aleatoric_std": float(np.std(pred["prob_alea"])),
+            "epistemic_mean": float(np.mean(pred["prob_epi"])),
+            "epistemic_std": float(np.std(pred["prob_epi"])),
+            "total_var_mean": float(np.mean(pred["prob_total_var"])),
+            "total_var_std": float(np.std(pred["prob_total_var"])),
             "entropy_mean": float(np.mean(pred["entropy"])),
             "entropy_std": float(np.std(pred["entropy"])),
         },
@@ -223,6 +246,9 @@ def evaluate_split(
             "y_true": y_true.astype(np.int64, copy=False),
             "prob_mean": prob.astype(np.float64, copy=False),
             "prob_var": pred["prob_var"].astype(np.float64, copy=False),
+            "prob_alea": pred["prob_alea"].astype(np.float64, copy=False),
+            "prob_epi": pred["prob_epi"].astype(np.float64, copy=False),
+            "prob_total_var": pred["prob_total_var"].astype(np.float64, copy=False),
             "entropy": pred["entropy"].astype(np.float64, copy=False),
             "case_id": group.astype(np.int64, copy=False),
         }

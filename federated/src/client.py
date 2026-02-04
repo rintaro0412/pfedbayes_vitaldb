@@ -16,11 +16,7 @@ project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# 修正: losses.py から FocalLoss をインポート
-try:
-    from losses import FocalLoss
-except ImportError:
-    from common.losses import FocalLoss
+import torch.nn.functional as F
 
 from common.dataset import VitalDBDataset
 from common.model import WaveformCRNN
@@ -38,8 +34,7 @@ class VitalDBClient(fl.client.NumPyClient):
         dataloader_workers: int = 0,
         pin_memory: bool | None = None,
         pos_weight: float | None = None,
-        # Focal Loss採用のため auto_pos_weight は使用しない方針とするが互換性のため残す
-        auto_pos_weight: bool = False, 
+        auto_pos_weight: bool = False,
     ):
         self.cid = cid
         self.train_ds = train_dataset
@@ -80,8 +75,9 @@ class VitalDBClient(fl.client.NumPyClient):
         self.set_parameters(parameters, model)
         model.train()
 
-        # 修正: Focal Loss の採用 (集中学習と統一)
-        criterion = FocalLoss(alpha=0.25, gamma=2.0).to(self.device)
+        pos_weight = None
+        if self.pos_weight is not None:
+            pos_weight = torch.tensor([float(self.pos_weight)], device=self.device)
         
         # Optimizer (集中学習と同じ設定: lr=1e-3, weight_decay=1e-4)
         optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -106,7 +102,7 @@ class VitalDBClient(fl.client.NumPyClient):
                     dtype=torch.float16,
                 ):
                     outputs = model(inputs)
-                    loss = criterion(outputs, targets)
+                    loss = F.binary_cross_entropy_with_logits(outputs, targets, pos_weight=pos_weight)
                 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -130,7 +126,9 @@ class VitalDBClient(fl.client.NumPyClient):
         self.set_parameters(parameters, model)
         model.eval()
 
-        criterion = FocalLoss(alpha=0.25, gamma=2.0).to(self.device)
+        pos_weight = None
+        if self.pos_weight is not None:
+            pos_weight = torch.tensor([float(self.pos_weight)], device=self.device)
         val_loader = self._create_loader(target_ds, shuffle=False)
         autocast_device = "cuda" if self.device.type == "cuda" else "cpu"
 
@@ -149,7 +147,7 @@ class VitalDBClient(fl.client.NumPyClient):
                     dtype=torch.float16,
                 ):
                     logits = model(inputs)
-                    loss = criterion(logits, targets)
+                    loss = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
 
                 total_loss += loss.item() * targets.size(0)
                 probs = torch.sigmoid(logits).detach().cpu().view(-1).tolist()

@@ -3,7 +3,7 @@ Shim et al., 2025 (Medicina) に「できるだけ」合わせて学習用セグ
 
 主要条件（本文より）
 - hypotension event: MAP <= 65 が 1 分超
-- positive: 各 hypotension event の 5 分前の 30 秒波形（入力）で予測（horizon=5min, window=30s）
+- positive: 各 hypotension event の 5 分前の 30 秒波形（入力）で予測（horizon=5min, window=60s）
 - negative: MAP > 65 が 20 分超続く "non-hypotensive segment" から抽出し、各 segment から 1 または 2 個の入力を取り、
   全体の negative 数が positive に近くなるようにする
 - artifact 除外:
@@ -117,10 +117,17 @@ def get_client_id(row):
 
 def robust_split(df_client, *, seed: int):
     total = len(df_client)
+    n_train, n_val, n_test = _compute_split_counts(total)
     if total < 3:
         empty = df_client.iloc[:0].copy()
         return df_client, empty, empty
-    
+
+    df_shuffled = df_client.sample(frac=1, random_state=int(seed)).reset_index(drop=True)
+    return df_shuffled.iloc[:n_train], df_shuffled.iloc[n_train:n_train+n_val], df_shuffled.iloc[n_train+n_val:]
+
+def _compute_split_counts(total: int) -> Tuple[int, int, int]:
+    if total < 3:
+        return total, 0, 0
     n_val = int(total * SPLIT_RATIOS['val'])
     n_test = int(total * SPLIT_RATIOS['test'])
     if SPLIT_RATIOS.get('val', 0.0) > 0 and n_val == 0:
@@ -128,14 +135,72 @@ def robust_split(df_client, *, seed: int):
     if SPLIT_RATIOS.get('test', 0.0) > 0 and n_test == 0:
         n_test = 1
     n_train = max(1, total - n_val - n_test)
-    
     if total - n_val - n_test <= 0:
         n_train = total - n_test
         n_val = 0
+    return n_train, n_val, n_test
 
-    df_shuffled = df_client.sample(frac=1, random_state=int(seed)).reset_index(drop=True)
-    return df_shuffled.iloc[:n_train], df_shuffled.iloc[n_train:n_train+n_val], df_shuffled.iloc[n_train+n_val:]
+def stratified_split_by_pos(df_client, *, pos_by_case: Dict[int, int], seed: int):
+    total = len(df_client)
+    n_train, n_val, n_test = _compute_split_counts(total)
+    if total < 3:
+        empty = df_client.iloc[:0].copy()
+        return df_client, empty, empty
 
+    case_ids = [int(cid) for cid in df_client["caseid"].astype(int).tolist()]
+    total_pos = sum(int(pos_by_case.get(cid, 0)) for cid in case_ids)
+    if total_pos <= 0:
+        return robust_split(df_client, seed=int(seed))
+
+    targets_cases = {"train": n_train, "val": n_val, "test": n_test}
+    raw_targets = {k: float(total_pos) * float(SPLIT_RATIOS.get(k, 0.0)) for k in ("train", "val", "test")}
+    target_pos = {k: 0 for k in ("train", "val", "test")}
+    for k in ("train", "val", "test"):
+        if targets_cases[k] > 0:
+            target_pos[k] = int(raw_targets.get(k, 0.0))
+    remainder = int(total_pos) - sum(int(v) for v in target_pos.values())
+    if remainder > 0:
+        fracs = [
+            (raw_targets[k] - float(target_pos[k]), k)
+            for k in ("train", "val", "test")
+            if targets_cases[k] > 0
+        ]
+        fracs.sort(reverse=True)
+        for i in range(int(remainder)):
+            _, k = fracs[int(i) % len(fracs)]
+            target_pos[k] = int(target_pos[k]) + 1
+
+    rng = np.random.default_rng(int(seed))
+    cases = [(cid, int(pos_by_case.get(cid, 0)), float(rng.random())) for cid in case_ids]
+    cases.sort(key=lambda x: (int(x[1]), float(x[2])), reverse=True)
+    curr_cases = {"train": 0, "val": 0, "test": 0}
+    curr_pos = {"train": 0, "val": 0, "test": 0}
+    assign: Dict[int, str] = {}
+    for cid, n_pos, _ in cases:
+        best_split = None
+        best_key = None
+        for split in ("train", "val", "test"):
+            if curr_cases[split] >= targets_cases[split]:
+                continue
+            pos_def = int(target_pos[split]) - int(curr_pos[split])
+            case_def = int(targets_cases[split]) - int(curr_cases[split])
+            key = (int(pos_def), int(case_def), float(rng.random()))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_split = split
+        if best_split is None:
+            for split in ("train", "val", "test"):
+                if curr_cases[split] < targets_cases[split]:
+                    best_split = split
+                    break
+        assign[int(cid)] = str(best_split)
+        curr_cases[str(best_split)] = int(curr_cases[str(best_split)]) + 1
+        curr_pos[str(best_split)] = int(curr_pos[str(best_split)]) + int(n_pos)
+
+    df_train = df_client[df_client["caseid"].astype(int).isin([cid for cid, sp in assign.items() if sp == "train"])].copy()
+    df_val = df_client[df_client["caseid"].astype(int).isin([cid for cid, sp in assign.items() if sp == "val"])].copy()
+    df_test = df_client[df_client["caseid"].astype(int).isin([cid for cid, sp in assign.items() if sp == "test"])].copy()
+    return df_train, df_val, df_test
 def find_intervals(mask_1hz: np.ndarray) -> List[Tuple[int, int]]:
     """mask_1hz の True 連続区間 [start,end) を返す（秒単位）"""
     out: List[Tuple[int, int]] = []
@@ -265,6 +330,14 @@ def _has_valid_etco2(case_path: str) -> bool:
     return False
 
 
+def _etco2_worker(args: Tuple[int, str]) -> Tuple[int, bool]:
+    idx, case_path = args
+    try:
+        return int(idx), bool(_has_valid_etco2(str(case_path)))
+    except Exception:
+        return int(idx), False
+
+
 def _load_case_arrays(
     case_path: str,
     *,
@@ -308,6 +381,23 @@ def _load_mbp_only(case_path: str) -> Optional[np.ndarray]:
     if df is None:
         return None
     return df[LABEL_TRACK].to_numpy(dtype=np.float32, copy=True)
+
+
+def _pass1_worker(task: Tuple[int, str]) -> Tuple[int, int, List[Tuple[int, int]]]:
+    cid, case_path = task
+    try:
+        mbp_100 = _load_mbp_only(case_path)
+        if mbp_100 is None:
+            return int(cid), 0, []
+        map_1hz = to_1hz_mean(mbp_100, FS)
+        if map_1hz.size == 0:
+            return int(cid), 0, []
+        pos_events = extract_pos_events(map_1hz)
+        norm_segs = extract_norm_segments(map_1hz)
+        norm_segs = [(int(s), int(e)) for s, e in norm_segs]
+        return int(cid), int(len(pos_events)), norm_segs
+    except Exception:
+        return int(cid), 0, []
 
 
 @dataclass(frozen=True)
@@ -412,7 +502,7 @@ def build_case_segments(
     if not waves:
         return None
 
-    x_wave = np.stack(waves, axis=0).astype(np.float32, copy=False)  # (N, 4, 3000)
+    x_wave = np.stack(waves, axis=0).astype(np.float32, copy=False)  # (N, 4, 6000)
     x_clin = np.repeat(clin_vec[None, :], repeats=int(x_wave.shape[0]), axis=0).astype(np.float32, copy=False)
     y = np.asarray(labels, dtype=np.int64)
     t_arr = np.asarray(t_event, dtype=np.int64)
@@ -434,7 +524,7 @@ def convert_worker(args):
             require_etco2=bool(require_etco2),
         )
         if segs is None:
-            return False, 0, 0
+            return int(case_id), False, 0, 0
 
         out_dir = os.path.dirname(dst_path)
         if out_dir:
@@ -459,9 +549,9 @@ def convert_worker(args):
             )
         n_pos = int(segs.y.sum())
         n_neg = int((segs.y == 0).sum())
-        return True, n_pos, n_neg
+        return int(case_id), True, n_pos, n_neg
     except Exception:
-        return False, 0, 0
+        return int(case_id), False, 0, 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -483,6 +573,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--opname-threshold", type=int, default=150)
     p.add_argument("--min-client-cases", type=int, default=150)
     p.add_argument(
+        "--min-client-pos",
+        type=int,
+        default=10,
+        help="After split, drop clients whose train/val/test positive events are below this (0 to disable).",
+    )
+    p.add_argument(
         "--client-scheme",
         choices=["department", "opname_optype"],
         default="opname_optype",
@@ -490,9 +586,13 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--merge-strategy",
-        choices=["dept_pool", "dept_min"],
+        choices=["dept_pool", "dept_min", "none"],
         default="dept_pool",
-        help="How to merge small clients when using opname_optype (dept_pool=pool per department, dept_min=absorb into smallest large client within department).",
+        help=(
+            "How to merge small clients when using opname_optype "
+            "(dept_pool=pool per department, dept_min=absorb into smallest large client within department, "
+            "none=do not merge; small clients are dropped by min_client_cases)."
+        ),
     )
     p.add_argument(
         "--exclude-clients",
@@ -554,11 +654,20 @@ def main():
     n_missing_etco2 = 0
     if args.require_etco2:
         print("  Checking ETCO2 waveform availability...")
-        keep_mask = []
-        for row in tqdm(df_valid.itertuples(index=False), total=len(df_valid), desc="etco2"):
-            case_path = str(getattr(row, "case_path"))
-            ok = _has_valid_etco2(case_path)
-            keep_mask.append(bool(ok))
+        keep_mask = [False] * int(len(df_valid))
+        if NUM_WORKERS <= 1:
+            for idx, row in enumerate(tqdm(df_valid.itertuples(index=False), total=len(df_valid), desc="etco2")):
+                case_path = str(getattr(row, "case_path"))
+                ok = _has_valid_etco2(case_path)
+                keep_mask[int(idx)] = bool(ok)
+        else:
+            print(f"  etco2 workers: {NUM_WORKERS}")
+            tasks = [(int(i), str(getattr(row, "case_path"))) for i, row in enumerate(df_valid.itertuples(index=False))]
+            with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                futures = [executor.submit(_etco2_worker, t) for t in tasks]
+                for f in tqdm(as_completed(futures), total=len(futures), desc="etco2"):
+                    idx, ok = f.result()
+                    keep_mask[int(idx)] = bool(ok)
         n_missing_etco2 = int(len(df_valid) - int(sum(keep_mask)))
         if n_missing_etco2 > 0:
             df_valid = df_valid.loc[keep_mask].copy()
@@ -617,7 +726,12 @@ def main():
 
         merged_summary: Dict[str, Dict[str, int]] = {}
 
-        if args.merge_strategy == "dept_pool":
+        if args.merge_strategy == "none":
+            def map_final(row):
+                dept_norm = row.department_norm
+                client_raw = row.client_raw
+                return f"{dept_norm}__{client_raw}"
+        elif args.merge_strategy == "dept_pool":
             def map_final(row):
                 dept = row.department
                 dept_norm = row.department_norm
@@ -736,24 +850,24 @@ def main():
         .nunique()
         .to_dict()
     )
-    if args.client_scheme == "opname_optype":
-        min_client_cases = int(args.min_client_cases)
-        small_final_clients = {cid: cnt for cid, cnt in final_counts.items() if cnt < min_client_cases}
-        if small_final_clients:
-            excluded_small_clients = {cid: int(cnt) for cid, cnt in small_final_clients.items()}
-            df_valid = df_valid[~df_valid["client_id"].isin(set(excluded_small_clients))].copy()
-            final_counts = (
-                df_valid[["client_id", "caseid"]]
-                .drop_duplicates()
-                .groupby("client_id")["caseid"]
-                .nunique()
-                .to_dict()
-            )
+    min_client_cases = int(args.min_client_cases)
+    small_final_clients = {cid: cnt for cid, cnt in final_counts.items() if cnt < min_client_cases}
+    if small_final_clients:
+        excluded_small_clients = {cid: int(cnt) for cid, cnt in small_final_clients.items()}
+        df_valid = df_valid[~df_valid["client_id"].isin(set(excluded_small_clients))].copy()
+        final_counts = (
+            df_valid[["client_id", "caseid"]]
+            .drop_duplicates()
+            .groupby("client_id")["caseid"]
+            .nunique()
+            .to_dict()
+        )
 
     print("\n[client assignment]")
     print(f"  scheme: {args.client_scheme}")
     print(f"  opname_threshold: {args.opname_threshold}")
     print(f"  min_client_cases: {args.min_client_cases}")
+    print(f"  min_client_pos (per split): {args.min_client_pos}")
     print(f"  merge_strategy: {args.merge_strategy}")
     print(f"  final clients: {len(final_counts)}")
     for cid, cnt in sorted(final_counts.items(), key=lambda kv: kv[1], reverse=True):
@@ -770,44 +884,71 @@ def main():
         dropped_str = ", ".join([f"{cid}={cnt}" for cid, cnt in sorted(excluded_small_clients.items())])
         print(f"  [drop] below min_client_cases: {dropped_str} (cases={dropped})")
     if args.client_scheme == "opname_optype":
-        if warnings_small_departments:
-            print("  [warning] departments without eligible absorber for OtherSurgery:")
-            for dept_norm, cnt in warnings_small_departments:
-                print(f"    {dept_norm}: OtherSurgery={cnt}")
+        if args.merge_strategy != "none":
+            if warnings_small_departments:
+                print("  [warning] departments without eligible absorber for OtherSurgery:")
+                for dept_norm, cnt in warnings_small_departments:
+                    print(f"    {dept_norm}: OtherSurgery={cnt}")
 
-        # Build merged summary from final assignment (deduplicated)
-        raw_counts_case = (
-            df_valid[["department", "client_raw", "caseid"]]
-            .drop_duplicates()
-            .groupby(["department", "client_raw"])["caseid"]
-            .nunique()
-        )
-        small_raws = raw_counts_case[raw_counts_case < min_client_cases]
-        raw_to_client = (
-            df_valid[["department", "client_raw", "client_id"]]
-            .drop_duplicates()
-            .groupby(["department", "client_raw"])["client_id"]
-            .agg(lambda s: s.iloc[0])
-        )
-        merged_summary_out: Dict[str, List[Tuple[str, int]]] = {}
-        for (dept, client_raw), cnt in small_raws.items():
-            target = raw_to_client.get((dept, client_raw))
-            if target is None:
-                continue
-            merged_summary_out.setdefault(target, []).append((client_raw, int(cnt)))
+            # Build merged summary from final assignment (deduplicated)
+            raw_counts_case = (
+                df_valid[["department", "client_raw", "caseid"]]
+                .drop_duplicates()
+                .groupby(["department", "client_raw"])["caseid"]
+                .nunique()
+            )
+            small_raws = raw_counts_case[raw_counts_case < min_client_cases]
+            raw_to_client = (
+                df_valid[["department", "client_raw", "client_id"]]
+                .drop_duplicates()
+                .groupby(["department", "client_raw"])["client_id"]
+                .agg(lambda s: s.iloc[0])
+            )
+            merged_summary_out: Dict[str, List[Tuple[str, int]]] = {}
+            for (dept, client_raw), cnt in small_raws.items():
+                target = raw_to_client.get((dept, client_raw))
+                if target is None:
+                    continue
+                merged_summary_out.setdefault(target, []).append((client_raw, int(cnt)))
 
-        if merged_summary_out:
-            print("  merged summary:")
-            for target, items in sorted(merged_summary_out.items(), key=lambda kv: kv[0]):
-                merged_str = ", ".join([f"{src} {cnt}" for src, cnt in sorted(items, key=lambda kv: kv[1], reverse=True)])
-                print(f"    into {target}: {merged_str}")
+            if merged_summary_out:
+                print("  merged summary:")
+                for target, items in sorted(merged_summary_out.items(), key=lambda kv: kv[0]):
+                    merged_str = ", ".join([f"{src} {cnt}" for src, cnt in sorted(items, key=lambda kv: kv[1], reverse=True)])
+                    print(f"    into {target}: {merged_str}")
+            else:
+                print("  merged summary: None")
         else:
-            print("  merged summary: None")
+            print("  merged summary: None (merge_strategy=none)")
 
-    # Split by client (train/val/test=70/10/20)
+    # pass-1: count pos events and collect norm segments for negative assignment
+    print("\n[2/3] pass1: counting events / collecting norm segments...")
+    pos_by_case: Dict[int, int] = {}
+    norm_segments_all: List[Tuple[int, int, int]] = []  # (caseid, s, e)
+    pass1_tasks = [
+        (int(getattr(row, "caseid")), str(getattr(row, "case_path")))
+        for row in df_valid.itertuples(index=False)
+    ]
+    if NUM_WORKERS <= 1:
+        for cid, case_path in tqdm(pass1_tasks, total=len(pass1_tasks), desc="pass1"):
+            _, n_pos, norm_segs = _pass1_worker((cid, case_path))
+            pos_by_case[int(cid)] = int(n_pos)
+            for (s, e) in norm_segs:
+                norm_segments_all.append((int(cid), int(s), int(e)))
+    else:
+        print(f"  pass1 workers: {NUM_WORKERS}")
+        with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = [executor.submit(_pass1_worker, t) for t in pass1_tasks]
+            for f in tqdm(as_completed(futures), total=len(futures), desc="pass1"):
+                cid, n_pos, norm_segs = f.result()
+                pos_by_case[int(cid)] = int(n_pos)
+                for (s, e) in norm_segs:
+                    norm_segments_all.append((int(cid), int(s), int(e)))
+
+    # Split by client (train/val/test=70/10/20) with pos_event stratification
     split_map: Dict[int, str] = {}
     for client_id, group_df in df_valid.groupby("client_id"):
-        train_df, val_df, test_df = robust_split(group_df, seed=int(args.seed))
+        train_df, val_df, test_df = stratified_split_by_pos(group_df, pos_by_case=pos_by_case, seed=int(args.seed))
         for cid in train_df["caseid"].astype(int).tolist():
             split_map[int(cid)] = "train"
         for cid in val_df["caseid"].astype(int).tolist():
@@ -818,25 +959,73 @@ def main():
     missing_split = int(df_valid["split"].isna().sum())
     df_valid = df_valid.dropna(subset=["split"]).copy()
 
-    # pass-1: count pos events and collect norm segments for negative assignment
-    print("\n[2/3] pass1: counting events / collecting norm segments...")
-    total_pos = 0
-    norm_segments_all: List[Tuple[int, int, int]] = []  # (caseid, s, e)
-    for row in tqdm(df_valid.itertuples(index=False), total=len(df_valid), desc="pass1"):
-        cid = int(getattr(row, "caseid"))
-        case_path = str(getattr(row, "case_path"))
-        mbp_100 = _load_mbp_only(case_path)
-        if mbp_100 is None:
-            continue
-        map_1hz = to_1hz_mean(mbp_100, FS)
-        if map_1hz.size == 0:
-            continue
-        pos_events = extract_pos_events(map_1hz)
-        total_pos += int(len(pos_events))
-        for (s, e) in extract_norm_segments(map_1hz):
-            norm_segments_all.append((cid, int(s), int(e)))
+    excluded_low_pos_clients: Dict[str, Dict[str, int]] = {}
+    min_client_pos = int(args.min_client_pos)
+    if min_client_pos > 0:
+        client_pos_by_split: Dict[str, Dict[str, int]] = {}
+        for row in df_valid.itertuples(index=False):
+            client_id = str(getattr(row, "client_id"))
+            split = str(getattr(row, "split"))
+            case_id = int(getattr(row, "caseid"))
+            cstat = client_pos_by_split.setdefault(client_id, {"train": 0, "val": 0, "test": 0})
+            cstat[split] = int(cstat.get(split, 0)) + int(pos_by_case.get(case_id, 0))
+
+        low_pos_clients = {
+            cid: counts
+            for cid, counts in client_pos_by_split.items()
+            if any(int(counts.get(s, 0)) < min_client_pos for s in ("train", "val", "test"))
+        }
+        if low_pos_clients:
+            excluded_low_pos_clients = {
+                cid: {s: int(counts.get(s, 0)) for s in ("train", "val", "test")}
+                for cid, counts in low_pos_clients.items()
+            }
+            df_valid = df_valid[~df_valid["client_id"].isin(set(low_pos_clients))].copy()
+
+            keep_caseids = set(df_valid["caseid"].astype(int).tolist())
+            pos_by_case = {cid: int(n) for cid, n in pos_by_case.items() if int(cid) in keep_caseids}
+            norm_segments_all = [(cid, s, e) for (cid, s, e) in norm_segments_all if int(cid) in keep_caseids]
+
+            final_counts = (
+                df_valid[["client_id", "caseid"]]
+                .drop_duplicates()
+                .groupby("client_id")["caseid"]
+                .nunique()
+                .to_dict()
+            )
+            dropped_str = ", ".join(
+                [
+                    f"{cid}(train={cnt.get('train', 0)}, val={cnt.get('val', 0)}, test={cnt.get('test', 0)})"
+                    for cid, cnt in sorted(excluded_low_pos_clients.items())
+                ]
+            )
+            dropped_pos = sum(int(v.get("train", 0)) + int(v.get("val", 0)) + int(v.get("test", 0)) for v in excluded_low_pos_clients.values())
+            print(f"  [drop] below min_client_pos per split: {dropped_str} (pos_events={dropped_pos})")
+            print(f"  final clients (after min_client_pos): {len(final_counts)}")
+            for cid, cnt in sorted(final_counts.items(), key=lambda kv: kv[1], reverse=True):
+                print(f"    {cid}: {cnt}")
+    if excluded_counts or excluded_small_clients or excluded_low_pos_clients:
+        print("\n[client drop summary]")
+        if excluded_counts:
+            dropped = sum(int(v) for v in excluded_counts.values())
+            dropped_str = ", ".join([f"{cid}={cnt}" for cid, cnt in sorted(excluded_counts.items())])
+            print(f"  exclude_clients: {dropped_str} (cases={dropped})")
+        if excluded_small_clients:
+            dropped = sum(int(v) for v in excluded_small_clients.values())
+            dropped_str = ", ".join([f"{cid}={cnt}" for cid, cnt in sorted(excluded_small_clients.items())])
+            print(f"  min_client_cases: {dropped_str} (cases={dropped})")
+        if excluded_low_pos_clients:
+            dropped = sum(int(v.get("train", 0)) + int(v.get("val", 0)) + int(v.get("test", 0)) for v in excluded_low_pos_clients.values())
+            dropped_str = ", ".join(
+                [
+                    f"{cid}(train={cnt.get('train', 0)}, val={cnt.get('val', 0)}, test={cnt.get('test', 0)})"
+                    for cid, cnt in sorted(excluded_low_pos_clients.items())
+                ]
+            )
+            print(f"  min_client_pos: {dropped_str} (pos_events={dropped})")
 
     n_norm = int(len(norm_segments_all))
+    total_pos = sum(int(v) for v in pos_by_case.values())
     assigned_k: Dict[Tuple[int, int, int], int] = {(cid, s, e): 1 for (cid, s, e) in norm_segments_all}
 
     total_neg_est = n_norm
@@ -856,6 +1045,7 @@ def main():
     # Build tasks
     print("\n[3/3] Generating segments (.npz)...")
     convert_tasks = []
+    case_meta: Dict[int, Tuple[str, str]] = {}
 
     def clin_to_vec(row) -> np.ndarray:
         sex = 1.0 if str(row.sex).upper().startswith("M") else 0.0
@@ -884,6 +1074,7 @@ def main():
         split = str(getattr(row, "split"))
         src = str(getattr(row, "case_path"))
         dst = os.path.join(out_base, client_id, split, f"case_{cid}.npz")
+        case_meta[int(cid)] = (str(client_id), str(split))
         assigned = assigned_by_case.get(cid, {})
         convert_tasks.append(
             (
@@ -904,17 +1095,79 @@ def main():
     success_count = 0
     pos_written = 0
     neg_written = 0
+    written_cases_by_split: Dict[str, int] = {}
+    written_windows_by_split: Dict[str, Dict[str, int]] = {}
+    written_clients: Dict[str, Dict[str, object]] = {}
     with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
         futures = [executor.submit(convert_worker, t) for t in convert_tasks]
         for f in tqdm(as_completed(futures), total=len(futures)):
-            ok, n_pos, n_neg = f.result()
+            case_id, ok, n_pos, n_neg = f.result()
             if ok:
                 success_count += 1
                 pos_written += int(n_pos)
                 neg_written += int(n_neg)
+                meta = case_meta.get(int(case_id))
+                if meta:
+                    client_id, split = meta
+                    written_cases_by_split[split] = int(written_cases_by_split.get(split, 0)) + 1
+                    ws = written_windows_by_split.setdefault(split, {"pos_windows": 0, "neg_windows": 0})
+                    ws["pos_windows"] = int(ws["pos_windows"]) + int(n_pos)
+                    ws["neg_windows"] = int(ws["neg_windows"]) + int(n_neg)
+                    cstat = written_clients.setdefault(
+                        client_id,
+                        {"cases_written": 0, "pos_windows": 0, "neg_windows": 0, "splits": {}},
+                    )
+                    cstat["cases_written"] = int(cstat["cases_written"]) + 1
+                    cstat["pos_windows"] = int(cstat["pos_windows"]) + int(n_pos)
+                    cstat["neg_windows"] = int(cstat["neg_windows"]) + int(n_neg)
+                    cs = cstat["splits"].setdefault(split, {"cases_written": 0, "pos_windows": 0, "neg_windows": 0})
+                    cs["cases_written"] = int(cs["cases_written"]) + 1
+                    cs["pos_windows"] = int(cs["pos_windows"]) + int(n_pos)
+                    cs["neg_windows"] = int(cs["neg_windows"]) + int(n_neg)
     failed_cases = int(len(convert_tasks) - success_count)
     pos_dropped_est = int(max(int(total_pos) - int(pos_written), 0))
     neg_dropped_est = int(max(int(total_neg_est) - int(neg_written), 0))
+
+    case_stats = df_valid[["caseid", "client_id", "split"]].drop_duplicates().copy()
+    case_stats["pos_events"] = case_stats["caseid"].map(pos_by_case).fillna(0).astype(int)
+    split_case_counts = case_stats.groupby("split")["caseid"].nunique().to_dict()
+    client_case_counts = case_stats.groupby("client_id")["caseid"].nunique().to_dict()
+    client_split_case_counts = case_stats.groupby(["client_id", "split"])["caseid"].nunique().to_dict()
+    split_pos_events = case_stats.groupby("split")["pos_events"].sum().to_dict()
+    client_pos_events = case_stats.groupby("client_id")["pos_events"].sum().to_dict()
+    client_split_pos_events = case_stats.groupby(["client_id", "split"])["pos_events"].sum().to_dict()
+    splits_detail: Dict[str, Dict[str, int]] = {}
+    for split in ("train", "val", "test"):
+        ws = written_windows_by_split.get(split, {"pos_windows": 0, "neg_windows": 0})
+        splits_detail[split] = {
+            "cases": int(split_case_counts.get(split, 0)),
+            "cases_written": int(written_cases_by_split.get(split, 0)),
+            "pos_windows": int(ws.get("pos_windows", 0)),
+            "neg_windows": int(ws.get("neg_windows", 0)),
+            "pos_events": int(split_pos_events.get(split, 0)),
+        }
+    clients_detail: Dict[str, Dict[str, object]] = {}
+    for client_id in sorted(client_case_counts.keys()):
+        cstat = written_clients.get(client_id, {"cases_written": 0, "pos_windows": 0, "neg_windows": 0, "splits": {}})
+        split_stats: Dict[str, Dict[str, int]] = {}
+        for split in ("train", "val", "test"):
+            key = (client_id, split)
+            wsplit = cstat.get("splits", {}).get(split, {"cases_written": 0, "pos_windows": 0, "neg_windows": 0})
+            split_stats[split] = {
+                "cases": int(client_split_case_counts.get(key, 0)),
+                "cases_written": int(wsplit.get("cases_written", 0)),
+                "pos_windows": int(wsplit.get("pos_windows", 0)),
+                "neg_windows": int(wsplit.get("neg_windows", 0)),
+                "pos_events": int(client_split_pos_events.get(key, 0)),
+            }
+        clients_detail[client_id] = {
+            "cases": int(client_case_counts.get(client_id, 0)),
+            "cases_written": int(cstat.get("cases_written", 0)),
+            "pos_windows": int(cstat.get("pos_windows", 0)),
+            "neg_windows": int(cstat.get("neg_windows", 0)),
+            "pos_events": int(client_pos_events.get(client_id, 0)),
+            "splits": split_stats,
+        }
 
     summary = {
         "eligible_cases": int(len(df_valid)),
@@ -924,6 +1177,8 @@ def main():
             "val": int((df_valid["split"] == "val").sum()),
             "test": int((df_valid["split"] == "test").sum()),
         },
+        "splits_detail": splits_detail,
+        "clients_detail": clients_detail,
         "pass1_total_pos_events": int(total_pos),
         "pass1_total_norm_segments": int(n_norm),
         "assigned_total_neg_windows_est": int(total_neg_est),
@@ -960,8 +1215,10 @@ def main():
         "merge_strategy": str(args.merge_strategy),
         "opname_threshold": int(args.opname_threshold),
         "min_client_cases": int(args.min_client_cases),
+        "min_client_pos": int(args.min_client_pos),
         "excluded_clients": {cid: int(cnt) for cid, cnt in sorted(excluded_counts.items())} if excluded_counts else {},
         "excluded_small_clients": {cid: int(cnt) for cid, cnt in sorted(excluded_small_clients.items())} if excluded_small_clients else {},
+        "excluded_low_pos_clients": {cid: int(cnt) for cid, cnt in sorted(excluded_low_pos_clients.items())} if excluded_low_pos_clients else {},
         "notes": {
             "waveforms": ["ABP", "ECG", "PPG", "ETCO2"],
             "tracks": {"ABP": WAVEFORMS["ABP"], "ECG": WAVEFORMS["ECG"], "PPG": WAVEFORMS["PPG"], "MBP": LABEL_TRACK},

@@ -1,0 +1,367 @@
+{
+  "started_utc": "2026-02-02T21:55:41Z",
+  "data_dir": "federated_data",
+  "min_client_cases": 100,
+  "notes": "Macro averages use eligible clients only (n_cases >= min_client_cases). Small clients reported separately.",
+  "seeds": [
+    "0"
+  ],
+  "pairs": [
+    {
+      "seed": "0",
+      "fedavg_run": "runs/fedavg/seed0",
+      "bfl_run": "runs/pfedbayes/seed0",
+      "temperature": {
+        "fedavg": 1000.0,
+        "bfl": 186.3173370361328
+      },
+      "eligible_clients": [],
+      "excluded_clients": [
+        "General_surgery__Biliary_Pancreas",
+        "General_surgery__Colorectal",
+        "General_surgery__Distal_gastrectomy",
+        "General_surgery__Exploratory_laparotomy",
+        "General_surgery__Hepatic",
+        "General_surgery__OtherSurgery",
+        "General_surgery__Others",
+        "General_surgery__Stomach",
+        "Gynecology__Major_resection",
+        "Thoracic_surgery__Lung_lobectomy",
+        "Thoracic_surgery__Lung_wedge_resection",
+        "Thoracic_surgery__Minor_resection",
+        "Thoracic_surgery__Others"
+      ],
+      "macro": {
+        "fedavg": {
+          "auprc": NaN,
+          "auroc": NaN,
+          "ece": NaN,
+          "brier": NaN,
+          "nll": NaN
+        },
+        "bfl": {
+          "auprc": NaN,
+          "auroc": NaN,
+          "ece": NaN,
+          "brier": NaN,
+          "nll": NaN
+        },
+        "diff": {
+          "auprc": NaN,
+          "auroc": NaN,
+          "ece": NaN,
+          "brier": NaN,
+          "nll": NaN
+        }
+      },
+      "clients": {
+        "General_surgery__Biliary_Pancreas": {
+          "fedavg": {
+            "n": 441,
+            "n_pos": 206,
+            "n_neg": 235,
+            "auprc": 0.4741837298801639,
+            "auroc": 0.5358603594298699,
+            "brier": 0.2500247681292989,
+            "nll": 0.6931967168292092,
+            "ece": 0.03329063448505881
+          },
+          "bfl": {
+            "n": 441,
+            "n_pos": 206,
+            "n_neg": 235,
+            "auprc": 0.4636445927592335,
+            "auroc": 0.5034393720305723,
+            "brier": 0.2500383943142217,
+            "nll": 0.6932239814765891,
+            "ece": 0.032960074829136154
+          },
+          "eligible": false
+        },
+        "General_surgery__Colorectal": {
+          "fedavg": {
+            "n": 392,
+            "n_pos": 181,
+            "n_neg": 211,
+            "auprc": 0.47581509690314006,
+            "auroc": 0.4827315336073944,
+            "brier": 0.2500336333782549,
+            "nll": 0.6932144473336499,
+            "ece": 0.03868104395817734
+          },
+          "bfl": {
+            "n": 392,
+            "n_pos": 181,
+            "n_neg": 211,
+            "auprc": 0.5361257130343485,
+            "auroc": 0.5556544735670708,
+            "brier": 0.24971974635504046,
+            "nll": 0.692586661077623,
+            "ece": 0.037415967075800416
+          },
+          "eligible": false
+        },
+        "General_surgery__Distal_gastrectomy": {
+          "fedavg": {
+            "n": 356,
+            "n_pos": 136,
+            "n_neg": 220,
+            "auprc": 0.4941285188080302,
+            "auroc": 0.6539271390374332,
+            "brier": 0.2500874308677704,
+            "nll": 0.6933220423278799,
+            "ece": 0.11840154414766296
+          },
+          "bfl": {
+            "n": 356,
+            "n_pos": 136,
+            "n_neg": 220,
+            "auprc": 0.3967717957756748,
+            "auroc": 0.5303141711229946,
+            "brier": 0.24957418821283978,
+            "nll": 0.6922954765329643,
+            "ece": 0.11707829717504847
+          },
+          "eligible": false
+        },
+        "General_surgery__Exploratory_laparotomy": {
+          "fedavg": {
+            "n": 201,
+            "n_pos": 113,
+            "n_neg": 88,
+            "auprc": 0.7285797294173453,
+            "auroc": 0.6343523732904265,
+            "brier": 0.24993094468526372,
+            "nll": 0.6930090698754312,
+            "ece": 0.061770040597488585
+          },
+          "bfl": {
+            "n": 201,
+            "n_pos": 113,
+            "n_neg": 88,
+            "auprc": 0.5875272179191129,
+            "auroc": 0.5216210780370072,
+            "brier": 0.25023236615688316,
+            "nll": 0.6936119347654797,
+            "ece": 0.06411023756757894
+          },
+          "eligible": false
+        },
+        "General_surgery__Hepatic": {
+          "fedavg": {
+            "n": 314,
+            "n_pos": 123,
+            "n_neg": 191,
+            "auprc": 0.4094352408919619,
+            "auroc": 0.5667220022985571,
+            "brier": 0.25008254410575664,
+            "nll": 0.6933122688058492,
+            "ece": 0.10867350894934047
+          },
+          "bfl": {
+            "n": 314,
+            "n_pos": 123,
+            "n_neg": 191,
+            "auprc": 0.3952004355831841,
+            "auroc": 0.5244540927084663,
+            "brier": 0.2497512983508748,
+            "nll": 0.6926497683961281,
+            "ece": 0.10737721697919683
+          },
+          "eligible": false
+        },
+        "General_surgery__OtherSurgery": {
+          "fedavg": {
+            "n": 217,
+            "n_pos": 143,
+            "n_neg": 74,
+            "auprc": 0.7038904223915788,
+            "auroc": 0.5420997920997921,
+            "brier": 0.24986809616488354,
+            "nll": 0.6928833728190612,
+            "ece": 0.15857742788604878
+          },
+          "bfl": {
+            "n": 217,
+            "n_pos": 143,
+            "n_neg": 74,
+            "auprc": 0.7273911560402515,
+            "auroc": 0.6175581175581176,
+            "brier": 0.2497757726375654,
+            "nll": 0.6926987021645736,
+            "ece": 0.15973297448202217
+          },
+          "eligible": false
+        },
+        "General_surgery__Others": {
+          "fedavg": {
+            "n": 150,
+            "n_pos": 80,
+            "n_neg": 70,
+            "auprc": 0.6271669513883272,
+            "auroc": 0.6233928571428571,
+            "brier": 0.2499590761870022,
+            "nll": 0.693065332904296,
+            "ece": 0.032922428448994956
+          },
+          "bfl": {
+            "n": 150,
+            "n_pos": 80,
+            "n_neg": 70,
+            "auprc": 0.4815683380679784,
+            "auroc": 0.4346428571428571,
+            "brier": 0.25013898178042493,
+            "nll": 0.6934252054766162,
+            "ece": 0.029727502266565953
+          },
+          "eligible": false
+        },
+        "General_surgery__Stomach": {
+          "fedavg": {
+            "n": 226,
+            "n_pos": 90,
+            "n_neg": 136,
+            "auprc": 0.4436035692484281,
+            "auroc": 0.5448529411764705,
+            "brier": 0.2500808776693831,
+            "nll": 0.6933089359348175,
+            "ece": 0.1021840894116765
+          },
+          "bfl": {
+            "n": 226,
+            "n_pos": 90,
+            "n_neg": 136,
+            "auprc": 0.495733404899196,
+            "auroc": 0.5320261437908496,
+            "brier": 0.24943647346745962,
+            "nll": 0.6920201161797828,
+            "ece": 0.09986722166031864
+          },
+          "eligible": false
+        },
+        "Gynecology__Major_resection": {
+          "fedavg": {
+            "n": 145,
+            "n_pos": 46,
+            "n_neg": 99,
+            "auprc": 0.5005673531741603,
+            "auroc": 0.6291172595520422,
+            "brier": 0.2501198352536047,
+            "nll": 0.6933868511002106,
+            "ece": 0.18311711262012348
+          },
+          "bfl": {
+            "n": 145,
+            "n_pos": 46,
+            "n_neg": 99,
+            "auprc": 0.26060883612571123,
+            "auroc": 0.40382081686429516,
+            "brier": 0.2508856242369713,
+            "nll": 0.6949184913121866,
+            "ece": 0.18416422112234704
+          },
+          "eligible": false
+        },
+        "Thoracic_surgery__Lung_lobectomy": {
+          "fedavg": {
+            "n": 326,
+            "n_pos": 134,
+            "n_neg": 192,
+            "auprc": 0.46142812047331666,
+            "auroc": 0.4997667910447761,
+            "brier": 0.25007434770446924,
+            "nll": 0.6932958760034739,
+            "ece": 0.0893751786896056
+          },
+          "bfl": {
+            "n": 326,
+            "n_pos": 134,
+            "n_neg": 192,
+            "auprc": 0.4234724223800845,
+            "auroc": 0.5133317786069652,
+            "brier": 0.24991060003902338,
+            "nll": 0.6929683628135901,
+            "ece": 0.08866756203715787
+          },
+          "eligible": false
+        },
+        "Thoracic_surgery__Lung_wedge_resection": {
+          "fedavg": {
+            "n": 170,
+            "n_pos": 48,
+            "n_neg": 122,
+            "auprc": 0.30327522099263954,
+            "auroc": 0.5266393442622951,
+            "brier": 0.2501801793916553,
+            "nll": 0.6935075394283816,
+            "ece": 0.21806268621893488
+          },
+          "bfl": {
+            "n": 170,
+            "n_pos": 48,
+            "n_neg": 122,
+            "auprc": 0.33783887803644685,
+            "auroc": 0.48924180327868844,
+            "brier": 0.24976541111555925,
+            "nll": 0.6926779942779774,
+            "ece": 0.21717512923128462
+          },
+          "eligible": false
+        },
+        "Thoracic_surgery__Minor_resection": {
+          "fedavg": {
+            "n": 171,
+            "n_pos": 69,
+            "n_neg": 102,
+            "auprc": 0.5240907442489771,
+            "auroc": 0.49211423699914747,
+            "brier": 0.250078596688075,
+            "nll": 0.6933043739668172,
+            "ece": 0.09689000370906814
+          },
+          "bfl": {
+            "n": 171,
+            "n_pos": 69,
+            "n_neg": 102,
+            "auprc": 0.42527899545166686,
+            "auroc": 0.5532821824381927,
+            "brier": 0.2500413805131762,
+            "nll": 0.6932299536082008,
+            "ece": 0.09747684594483402
+          },
+          "eligible": false
+        },
+        "Thoracic_surgery__Others": {
+          "fedavg": {
+            "n": 223,
+            "n_pos": 120,
+            "n_neg": 103,
+            "auprc": 0.6250276441662963,
+            "auroc": 0.4905744336569579,
+            "brier": 0.24996017581013624,
+            "nll": 0.6930675321412857,
+            "ece": 0.03772198271858318
+          },
+          "bfl": {
+            "n": 223,
+            "n_pos": 120,
+            "n_neg": 103,
+            "auprc": 0.5375588792980808,
+            "auroc": 0.5030339805825244,
+            "brier": 0.24991556040097954,
+            "nll": 0.6929782991112571,
+            "ece": 0.03695703849129617
+          },
+          "eligible": false
+        }
+      }
+    }
+  ],
+  "summary": {
+    "diff_auprc_mean": NaN,
+    "diff_auprc_p2_5": NaN,
+    "diff_auprc_p97_5": NaN,
+    "diff_auprc_p_signflip": NaN
+  },
+  "finished_utc": "2026-02-02T21:56:24Z"
+}

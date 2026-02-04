@@ -1,0 +1,10 @@
+{
+  "scenarios": {
+    "A": {
+      "Local": "runs/local/seed0",
+      "Centralized": "runs/centralized_batch/seed0",
+      "FedAvg": "runs/fedavg_batch/seed0",
+      "pFedBayes": "runs/pfedbayes/seed0"
+    }
+  }
+}

@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from bayes_federated.bayes_layers import BayesianConv1d, BayesianLinear, BayesianGRU, BayesParams
-from bayes_federated.bayes_param import normalize_param_type, rho_from_sigma
+from bayes_federated.bayes_param import normalize_param_type
 from common.ioh_model import ConvBlock1d, IOHModelConfig
 
 
@@ -34,11 +34,27 @@ class BFLModel(nn.Module):
         param_type: str = "logvar",
         mu_init: str = "zeros",
         init_rho: float | None = None,
+        var_reduction_h: float = 1.0,
     ) -> None:
         super().__init__()
         self.cfg = cfg
         self.full_bayes = bool(full_bayes)
+        self.var_reduction_h = float(var_reduction_h)
+        if self.var_reduction_h <= 0:
+            raise ValueError("var_reduction_h must be > 0")
         c0 = int(cfg.base_channels)
+
+        layer_idx = 0
+
+        def next_sigma() -> float:
+            nonlocal layer_idx
+            sigma = float(prior_sigma)
+            if self.var_reduction_h != 1.0:
+                var = sigma * sigma
+                var = var / (self.var_reduction_h ** layer_idx)
+                sigma = float(max(var, 1e-12) ** 0.5)
+            layer_idx += 1
+            return sigma
 
         if self.full_bayes:
             self.block1 = BayesianConvBlock1d(
@@ -46,7 +62,7 @@ class BFLModel(nn.Module):
                 c0,
                 k=7,
                 dropout=cfg.dropout,
-                prior_sigma=prior_sigma,
+                prior_sigma=next_sigma(),
                 logvar_min=logvar_min,
                 logvar_max=logvar_max,
                 param_type=param_type,
@@ -58,7 +74,7 @@ class BFLModel(nn.Module):
                 c0 * 2,
                 k=5,
                 dropout=cfg.dropout,
-                prior_sigma=prior_sigma,
+                prior_sigma=next_sigma(),
                 logvar_min=logvar_min,
                 logvar_max=logvar_max,
                 param_type=param_type,
@@ -70,7 +86,7 @@ class BFLModel(nn.Module):
                 c0 * 4,
                 k=3,
                 dropout=cfg.dropout,
-                prior_sigma=prior_sigma,
+                prior_sigma=next_sigma(),
                 logvar_min=logvar_min,
                 logvar_max=logvar_max,
                 param_type=param_type,
@@ -89,7 +105,7 @@ class BFLModel(nn.Module):
                 self.gru = BayesianGRU(
                     input_size=c0 * 4,
                     hidden_size=int(cfg.gru_hidden),
-                    prior_sigma=float(prior_sigma),
+                    prior_sigma=next_sigma(),
                     logvar_min=float(logvar_min),
                     logvar_max=float(logvar_max),
                     param_type=param_type,
@@ -114,7 +130,7 @@ class BFLModel(nn.Module):
                 self.clin_fc = BayesianLinear(
                     int(cfg.clin_dim),
                     int(cfg.clin_dim),
-                    prior_sigma=float(prior_sigma),
+                    prior_sigma=next_sigma(),
                     logvar_min=float(logvar_min),
                     logvar_max=float(logvar_max),
                     param_type=param_type,
@@ -135,7 +151,7 @@ class BFLModel(nn.Module):
             self.head_fc1 = BayesianLinear(
                 head_in,
                 head_in,
-                prior_sigma=float(prior_sigma),
+                prior_sigma=next_sigma(),
                 logvar_min=float(logvar_min),
                 logvar_max=float(logvar_max),
                 param_type=param_type,
@@ -150,7 +166,7 @@ class BFLModel(nn.Module):
         self.bayes_head = BayesianLinear(
             head_in,
             1,
-            prior_sigma=float(prior_sigma),
+            prior_sigma=next_sigma(),
             logvar_min=float(logvar_min),
             logvar_max=float(logvar_max),
             param_type=param_type,
@@ -455,16 +471,12 @@ def build_bfl_model_from_point_checkpoint(
     param_type: str = "logvar",
     mu_init: str = "zeros",
     init_rho: float | None = None,
+    var_reduction_h: float = 1.0,
 ) -> tuple[BFLModel, Dict[str, BayesParams], bool]:
     """
     Returns (model, prior_params, used_point_init).
     """
     ptype = normalize_param_type(param_type)
-
-    def _param_from_sigma(sigma: float) -> float:
-        if ptype == "rho":
-            return float(rho_from_sigma(sigma))
-        return float(torch.log(torch.tensor(sigma**2)))
 
     if ckpt_path is None or not Path(ckpt_path).exists():
         if fallback_cfg is None:
@@ -478,6 +490,7 @@ def build_bfl_model_from_point_checkpoint(
             param_type=ptype,
             mu_init=mu_init,
             init_rho=init_rho,
+            var_reduction_h=var_reduction_h,
         )
         prior_params = model.get_posterior()
         return model, prior_params, False
@@ -494,6 +507,7 @@ def build_bfl_model_from_point_checkpoint(
         param_type=ptype,
         mu_init=mu_init,
         init_rho=init_rho,
+        var_reduction_h=var_reduction_h,
     )
 
     state_dict = ckpt["state_dict"]
@@ -507,17 +521,19 @@ def build_bfl_model_from_point_checkpoint(
             prior_params = model.get_posterior()
             return model, prior_params, False
         with torch.no_grad():
+            w_prior = model.bayes_head.prior_weight_logvar.detach().clone().float()
+            b_prior = model.bayes_head.prior_bias_logvar.detach().clone().float()
             model.bayes_head.set_posterior(
                 point_head.weight.clone().float(),
-                torch.full_like(point_head.weight, _param_from_sigma(prior_sigma)),
+                w_prior,
                 point_head.bias.clone().float(),
-                torch.full_like(point_head.bias, _param_from_sigma(prior_sigma)),
+                b_prior,
             )
             model.bayes_head.set_prior(
                 point_head.weight.clone().float(),
-                torch.full_like(point_head.weight, _param_from_sigma(prior_sigma)),
+                w_prior,
                 point_head.bias.clone().float(),
-                torch.full_like(point_head.bias, _param_from_sigma(prior_sigma)),
+                b_prior,
             )
         return model, model.get_posterior(), True
 
@@ -532,8 +548,8 @@ def build_bfl_model_from_point_checkpoint(
             b = state_dict[b_key].detach().clone().float()
         else:
             b = torch.zeros((w.shape[0],), dtype=w.dtype)
-        param = torch.full_like(w, _param_from_sigma(prior_sigma))
-        bparam = torch.full_like(b, _param_from_sigma(prior_sigma))
+        param = module.prior_weight_logvar.detach().clone().float()
+        bparam = module.prior_bias_logvar.detach().clone().float()
         module.set_posterior(w, param, b, bparam)
         module.set_prior(w, param, b, bparam)
         used_point = True
@@ -544,8 +560,8 @@ def build_bfl_model_from_point_checkpoint(
             return
         w = state_dict[w_key].detach().clone().float()
         b = torch.zeros((w.shape[0],), dtype=w.dtype)
-        param = torch.full_like(w, _param_from_sigma(prior_sigma))
-        bparam = torch.full_like(b, _param_from_sigma(prior_sigma))
+        param = block.conv.prior_weight_logvar.detach().clone().float()
+        bparam = block.conv.prior_bias_logvar.detach().clone().float()
         block.conv.set_posterior(w, param, b, bparam)
         block.conv.set_prior(w, param, b, bparam)
         used_point = True

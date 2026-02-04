@@ -49,6 +49,7 @@ vitaldb_data/
 vitaldb_data_old/
 data/
 runs/
+tmp/
 clinical_data.csv
 data_inventory.json
 tmp_*.json

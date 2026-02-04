@@ -54,7 +54,7 @@ def normalize_model_cfg(raw: Dict[str, Any] | None) -> IOHModelConfig:
 class IOHNet(nn.Module):
     """
     Minimal 1D CNN (optionally + GRU) for IOH prediction.
-    Input: (B, C=4, T=3000)
+    Input: (B, C=4, T=6000)
     Output: logits (B, 1)
     """
 

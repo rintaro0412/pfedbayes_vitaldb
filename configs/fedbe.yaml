@@ -1,0 +1,78 @@
+run:
+  out_dir: runs/fedbe
+  run_name: seed0
+
+seed: 0
+device: cuda
+
+data:
+  federated_dir: federated_data
+  server_unlabeled_dir: server_unlabeled_v2
+  train_split: train
+  val_split: val
+  test_split: test
+
+server_unlabeled:
+  frac: 0.2
+  seed: 42
+  mode: drop_y
+  make_if_missing: false
+
+test:
+  note: "requires client consent for server_unlabeled"
+
+train:
+  rounds: 100
+  local_epochs: 1
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.0001
+  num_workers: 32
+  cache_in_memory: false
+  max_cache_files: 32
+  cache_dtype: float32
+
+distill:
+  epochs: 2
+  lr: 0.003
+  batch_size: 64
+  temperature: 2.0
+  loss_type: kl
+  check_loss_decrease: true
+  check_lr: 0.01
+  check_steps: 5
+
+fedbe:
+  update: distill   # distill | fedavg
+  init: fedavg      # fedavg | global
+  client_weight: n_examples  # n_examples | uniform
+  teacher:
+    type: swag
+    add_fedavg: true
+    include_clients: true
+    warmup_rounds: 2
+    num_samples: 12
+    sample_mode: gaussian  # gaussian | dirichlet | random
+    dirichlet_alpha: 1.0
+    var_scale: 0.06
+    swag_stepsize: 1.0
+    concentrate_num: 1
+  swa:
+    enabled: true
+    start_step: 100
+    freq: 10
+
+model:
+  base_channels: 32
+  dropout: 0.1
+  use_gru: true
+  gru_hidden: 64
+
+eval:
+  threshold: 0.5
+  threshold_method: youden-val
+  model_selection: best
+  selection_source: val
+  selection_metric: auroc
+  test_every_round: true
+  per_client_every_round: true

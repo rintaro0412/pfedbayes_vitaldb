@@ -1,0 +1,39 @@
+{
+  "run_dir": "runs/fedbe/seed0",
+  "compute_log": {
+    "status": "ok",
+    "rounds": 100,
+    "client_steps_total": 5400,
+    "distill_steps_total": 4000,
+    "total_steps_total": 9400,
+    "client_steps_mean": 54.0,
+    "distill_steps_mean": 40.0,
+    "total_steps_mean": 94.0
+  },
+  "model_trace": {
+    "status": "ok",
+    "teacher_count_min": 14,
+    "teacher_count_mean": 25.76,
+    "teacher_count_max": 26,
+    "teacher_type_unique": [
+      "swag"
+    ],
+    "teacher_sample_mode_unique": [
+      "gaussian"
+    ],
+    "teacher_num_sample_unique": [
+      12
+    ],
+    "teacher_add_fedavg_unique": [
+      true
+    ],
+    "teacher_include_clients_unique": [
+      true
+    ],
+    "used_swa_rounds": 0,
+    "used_swa_ratio": 0.0,
+    "update_mode_unique": [
+      "distill"
+    ]
+  }
+}

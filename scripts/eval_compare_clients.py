@@ -50,14 +50,24 @@ def _list_client_files(data_dir: str, split: str) -> Dict[str, List[str]]:
 
 
 def _load_fedavg_model(run_dir: Path, device: torch.device) -> IOHNet:
-    ckpt = load_checkpoint(run_dir / "checkpoints" / "model_best.pt", map_location="cpu")
+    ckpt_path = run_dir / "checkpoints" / "model_best.pt"
+    if not ckpt_path.exists():
+        ckpt_path = run_dir / "checkpoints" / "model_last.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"FedAvg checkpoint not found under {run_dir}/checkpoints")
+    ckpt = load_checkpoint(ckpt_path, map_location="cpu")
     model = IOHNet(normalize_model_cfg(ckpt.get("model_cfg", {})))
     model.load_state_dict(ckpt["state_dict"], strict=True)
     return model.to(device)
 
 
 def _load_bfl_model(run_dir: Path, device: torch.device) -> BFLModel:
-    ckpt = load_checkpoint(run_dir / "checkpoints" / "model_best.pt", map_location="cpu")
+    ckpt_path = run_dir / "checkpoints" / "model_best.pt"
+    if not ckpt_path.exists():
+        ckpt_path = run_dir / "checkpoints" / "model_last.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"BFL checkpoint not found under {run_dir}/checkpoints")
+    ckpt = load_checkpoint(ckpt_path, map_location="cpu")
     cfg = ckpt["model_cfg"]
     prior_sigma = 0.1
     logvar_min = -12.0
@@ -380,7 +390,7 @@ def main() -> None:
             }
         )
 
-    # Across seeds summary (AUPRC primary)
+    # Summary across runs (AUPRC primary)
     diffs_arr = np.asarray(diffs_auprc, dtype=np.float64)
     summary = {
         "diff_auprc_mean": float(np.nanmean(diffs_arr)),

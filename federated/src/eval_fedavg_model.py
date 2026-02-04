@@ -65,7 +65,7 @@ def collect_global_predictions(model, data_dir, split, device, batch_size=512):
         print(f"No files found for split {split}")
         return [], []
 
-    dataset = VitalDBDataset(files, window_size=3000, stride=3000)
+    dataset = VitalDBDataset(files, window_size=6000, stride=6000)
     loader = DataLoader(dataset, batch_size=batch_size, num_workers=8, pin_memory=(device.type=="cuda"), shuffle=False)
     
     all_preds = []

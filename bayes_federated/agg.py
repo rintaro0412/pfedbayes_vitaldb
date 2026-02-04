@@ -56,6 +56,16 @@ def _make_betas(weights: List[float], *, cfg: AggConfig, num_clients: int) -> to
     return beta
 
 
+def _normalize_client_weights(weights: List[float]) -> torch.Tensor:
+    w = torch.tensor(weights, dtype=torch.float64)
+    if not torch.isfinite(w).all():
+        raise ValueError("Non-finite client weights.")
+    w_sum = float(w.sum().item())
+    if w_sum <= 0:
+        raise ValueError("Sum of client weights must be >0.")
+    return w / w_sum
+
+
 def poe_prior_corrected(
     *,
     prior: BayesParams,
@@ -175,7 +185,8 @@ def feduab_aggregate(
     if len(posteriors) != len(weights):
         raise ValueError("posteriors and weights length mismatch.")
 
-    beta = _make_betas(weights, cfg=cfg, num_clients=len(posteriors))
+    # Eq.(8) in FedUAB: alpha_k = n_k / n (normalized by total examples).
+    beta = _normalize_client_weights(weights)
 
     clamped = 0
     tau_w_list = []

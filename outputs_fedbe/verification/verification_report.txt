@@ -1,0 +1,13 @@
+FedBE verification report
+- fedavg_run: runs/fedavg/seed0
+- fedbe_run: runs/fedbe/seed0
+- out: outputs/verification/verification_report.json
+
+Key checks:
+- leakage: pass
+- threshold_fedavg: ['youden-val']
+- threshold_fedbe: ['youden-val']
+- global_state_trace: pass
+- compute_log_fedbe: pass
+- noniid: pass
+- ablation_scan: pass

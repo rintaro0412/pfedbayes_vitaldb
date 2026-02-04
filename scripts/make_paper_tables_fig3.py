@@ -30,7 +30,7 @@ def _autodetect_run(patterns: Iterable[str]) -> Tuple[Path | None, List[Path]]:
     return files[0].parent, files
 
 
-def _load_confusion_from_clients(path: Path, *, prefer: str = "post") -> Dict[str, float] | None:
+def _load_confusion_from_clients(path: Path, *, prefer: str = "pre") -> Dict[str, float] | None:
     if not path.exists():
         return None
     data = read_json(path)
@@ -68,20 +68,6 @@ def _accuracy_from_confusion(conf: Dict[str, float] | None) -> float | None:
         return None
 
 
-def _load_temperature(run_dir: Path, *, fallback_summary: Path | None = None) -> float | None:
-    temp_path = run_dir / "temperature.json"
-    if temp_path.exists():
-        v = read_json(temp_path).get("temperature")
-        if v is not None:
-            return float(v)
-    if fallback_summary is not None and fallback_summary.exists():
-        best = read_json(fallback_summary).get("best", {})
-        v = best.get("temperature")
-        if v is not None:
-            return float(v)
-    return None
-
-
 def _load_threshold(run_dir: Path, *, primary: float | None = None, fallback_summary: Path | None = None) -> float | None:
     if primary is not None:
         return float(primary)
@@ -105,19 +91,17 @@ def _load_method_row(method: str, run_dir: Path) -> MethodRow:
         if not report_path.exists():
             raise FileNotFoundError(f"central report not found: {report_path}")
         rep = read_json(report_path)
-        metrics = rep.get("metrics_post") or rep.get("metrics_pre")
+        metrics = rep.get("metrics_pre")
         if metrics is None:
             raise RuntimeError(f"central report missing metrics: {report_path}")
-        conf = rep.get("confusion_post") or rep.get("confusion_pre")
+        conf = rep.get("confusion_pre")
         acc = _accuracy_from_confusion(conf)
-        temperature = _load_temperature(run_dir)
         threshold = _load_threshold(run_dir, primary=rep.get("threshold"))
         return {
             "method": "Central",
             "run_dir": run_dir,
             "metrics": metrics,
             "accuracy": acc,
-            "temperature": temperature,
             "threshold": threshold,
             "n": int(rep.get("n", metrics.get("n", 0))),
             "n_pos": int(metrics.get("n_pos", 0)),
@@ -130,27 +114,51 @@ def _load_method_row(method: str, run_dir: Path) -> MethodRow:
         if not report_path.exists():
             raise FileNotFoundError(f"fedavg report not found: {report_path}")
         rep = read_json(report_path)
-        metrics = rep.get("metrics_post") or rep.get("metrics_pre")
+        metrics = rep.get("metrics_pre")
         if metrics is None:
             raise RuntimeError(f"fedavg report missing metrics: {report_path}")
-        conf = rep.get("confusion_post") or rep.get("confusion_pre")
-        per_client_conf = _load_confusion_from_clients(run_dir / "test_report_per_client.json", prefer="post")
+        conf = rep.get("confusion_pre")
+        per_client_conf = _load_confusion_from_clients(run_dir / "test_report_per_client.json", prefer="pre")
         if conf is None:
             conf = per_client_conf
         acc = _accuracy_from_confusion(conf)
-        temperature = _load_temperature(run_dir)
         threshold = _load_threshold(run_dir, primary=rep.get("threshold"))
         return {
             "method": "FedAvg",
             "run_dir": run_dir,
             "metrics": metrics,
             "accuracy": acc,
-            "temperature": temperature,
             "threshold": threshold,
             "n": int(rep.get("n", metrics.get("n", 0))),
             "n_pos": int(metrics.get("n_pos", 0)),
             "n_neg": int(metrics.get("n_neg", 0)),
-            "artifacts": [report_path, run_dir / "test_report_per_client.json", run_dir / "temperature.json", run_dir / "threshold.json"],
+            "artifacts": [report_path, run_dir / "test_report_per_client.json"],
+        }
+
+    if method == "fedbe":
+        report_path = run_dir / "test_report.json"
+        if not report_path.exists():
+            raise FileNotFoundError(f"fedbe report not found: {report_path}")
+        rep = read_json(report_path)
+        metrics = rep.get("metrics_pre")
+        if metrics is None:
+            raise RuntimeError(f"fedbe report missing metrics: {report_path}")
+        conf = rep.get("confusion_pre")
+        per_client_conf = _load_confusion_from_clients(run_dir / "test_report_per_client.json", prefer="pre")
+        if conf is None:
+            conf = per_client_conf
+        acc = _accuracy_from_confusion(conf)
+        threshold = _load_threshold(run_dir, primary=rep.get("threshold"))
+        return {
+            "method": "FedBE",
+            "run_dir": run_dir,
+            "metrics": metrics,
+            "accuracy": acc,
+            "threshold": threshold,
+            "n": int(rep.get("n", metrics.get("n", 0))),
+            "n_pos": int(metrics.get("n_pos", 0)),
+            "n_neg": int(metrics.get("n_neg", 0)),
+            "artifacts": [report_path, run_dir / "test_report_per_client.json"],
         }
 
     if method == "bfl":
@@ -158,20 +166,18 @@ def _load_method_row(method: str, run_dir: Path) -> MethodRow:
         if not report_path.exists():
             raise FileNotFoundError(f"bfl report not found: {report_path}")
         rep = read_json(report_path)
-        metrics = rep.get("metrics_post") or rep.get("metrics_pre")
+        metrics = rep.get("metrics_pre")
         if metrics is None:
             raise RuntimeError(f"bfl report missing metrics: {report_path}")
-        conf = rep.get("confusion_post") or rep.get("confusion_pre")
+        conf = rep.get("confusion_pre")
         acc = _accuracy_from_confusion(conf)
         summary_path = run_dir / "summary.json"
-        temperature = _load_temperature(run_dir, fallback_summary=summary_path)
         threshold = _load_threshold(run_dir, primary=rep.get("threshold"), fallback_summary=summary_path)
         return {
             "method": "BFL",
             "run_dir": run_dir,
             "metrics": metrics,
             "accuracy": acc,
-            "temperature": temperature,
             "threshold": threshold,
             "n": int(rep.get("n", metrics.get("n", 0))),
             "n_pos": int(metrics.get("n_pos", 0)),
@@ -259,13 +265,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Build paper tables/figure from existing evaluation artifacts (no re-training/inference).")
     ap.add_argument("--central-run", default=None, help="Run dir for Central method (expects eval_test.json).")
     ap.add_argument("--fedavg-run", default=None, help="Run dir for FedAvg (expects test_report.json).")
+    ap.add_argument("--fedbe-run", default=None, help="Run dir for FedBE (expects test_report.json).")
     ap.add_argument("--bfl-run", default=None, help="Run dir for BFL (expects test_report.json/summary.json).")
     ap.add_argument("--clinical-csv", default="clinical_data.csv", help="Clinical metadata CSV (caseid, department).")
-    ap.add_argument("--compare-json", default="runs/compare/bfl_vs_fedavg_test_post.json", help="Compare JSON for Fig3 (single file).")
+    ap.add_argument("--compare-json", default="runs/compare/bfl_vs_fedavg_test_pre.json", help="Compare JSON for Fig3 (single file).")
     ap.add_argument("--compare-jsons", default=None, help="Comma-separated compare JSONs for Fig3 (merged).")
     ap.add_argument("--data-dir", default="federated_data", help="Windowed NPZ data dir (used only when predictions include case/client ids).")
     ap.add_argument("--out-dir", default=".", help="Output directory for tables/figure.")
     ap.add_argument("--n-bins", type=int, default=15, help="Number of bins for reliability/ECE.")
+    ap.add_argument("--allow-missing", action="store_true", help="Do not fail if some methods/artifacts are missing.")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -312,7 +320,15 @@ def main() -> None:
 
     missing: list[str] = []
     methods: list[MethodRow] = []
-    for name, run_dir in [("central", args.central_run), ("fedavg", args.fedavg_run), ("bfl", args.bfl_run)]:
+    method_specs = [
+        ("central", args.central_run),
+        ("fedavg", args.fedavg_run),
+        ("bfl", args.bfl_run),
+    ]
+    if args.fedbe_run is not None:
+        method_specs.insert(2, ("fedbe", args.fedbe_run))
+
+    for name, run_dir in method_specs:
         if run_dir is None:
             missing.append(f"{name}: run dir not provided and auto-detection failed")
             continue
@@ -349,7 +365,6 @@ def main() -> None:
                 "ECE": metrics.get("ece"),
                 "Brier": metrics.get("brier"),
                 "NLL": metrics.get("nll"),
-                "T": row.get("temperature"),
                 "thr": row.get("threshold"),
                 "n_test": row.get("n"),
                 "pos_rate": _pos_rate(int(row.get("n_pos", 0)), int(row.get("n", 0))),
@@ -364,79 +379,84 @@ def main() -> None:
     print("\nLaTeX Table 2 (global):\n")
     print(latex_table2)
 
-    # Table 3 (per-client comparison: FedAvg vs BFL).
-    table3_rows: list[dict[str, object]] = []
-    per_client_missing = False
+    # Table 3 (per-client comparison: FedAvg vs BFL/FedBE).
     per_client_data: dict[str, pd.DataFrame] = {}
     for row in methods:
         method = str(row["method"])
-        if method not in {"FedAvg", "BFL", "Central"}:
+        if method not in {"FedAvg", "BFL", "FedBE", "Central"}:
             continue
         run_dir = Path(str(row.get("run_dir", ".")))
         per_client_path = run_dir / "test_report_per_client.csv"
         df = _load_per_client_csv(per_client_path)
         if df is None:
             missing.append(f"Table3: per-client CSV not found for {method}: {per_client_path}")
-            per_client_missing = True
             continue
         if "client_id" not in df.columns:
             missing.append(f"Table3: per-client CSV missing client_id for {method}: {per_client_path}")
-            per_client_missing = True
             continue
         per_client_data[method] = df
 
-    if not per_client_missing and {"FedAvg", "BFL"} <= set(per_client_data.keys()):
-        df_a = per_client_data["FedAvg"]
-        df_b = per_client_data["BFL"]
-        keep_cols = ["client_id", "n", "n_pos", "auprc_post", "ece_post"]
+    pairs: list[tuple[str, str, str]] = []
+    if {"FedAvg", "BFL"} <= set(per_client_data.keys()):
+        pairs.append(("FedAvg", "BFL", "table3_client.csv"))
+    if {"FedAvg", "FedBE"} <= set(per_client_data.keys()):
+        out_name = "table3_client_fedbe.csv" if pairs else "table3_client.csv"
+        pairs.append(("FedAvg", "FedBE", out_name))
+
+    for method_a, method_b, out_name in pairs:
+        df_a = per_client_data[method_a]
+        df_b = per_client_data[method_b]
+        keep_cols = ["client_id", "n", "n_pos", "auprc_pre", "ece_pre"]
         df_a = df_a[[c for c in keep_cols if c in df_a.columns]].copy()
         df_b = df_b[[c for c in keep_cols if c in df_b.columns]].copy()
+        suffix_a = method_a.lower()
+        suffix_b = method_b.lower()
         df_a = df_a.rename(
             columns={
-                "n": "n_fedavg",
-                "n_pos": "n_pos_fedavg",
-                "auprc_post": "auprc_fedavg",
-                "ece_post": "ece_fedavg",
+                "n": f"n_{suffix_a}",
+                "n_pos": f"n_pos_{suffix_a}",
+                "auprc_pre": f"auprc_{suffix_a}",
+                "ece_pre": f"ece_{suffix_a}",
             }
         )
         df_b = df_b.rename(
             columns={
-                "n": "n_bfl",
-                "n_pos": "n_pos_bfl",
-                "auprc_post": "auprc_bfl",
-                "ece_post": "ece_bfl",
+                "n": f"n_{suffix_b}",
+                "n_pos": f"n_pos_{suffix_b}",
+                "auprc_pre": f"auprc_{suffix_b}",
+                "ece_pre": f"ece_{suffix_b}",
             }
         )
         merged = pd.merge(df_a, df_b, on="client_id", how="inner")
         merged = merged.sort_values("client_id")
-        table3_path = out_dir / "table3_client.csv"
+        table3_path = out_dir / out_name
         merged.to_csv(table3_path, index=False)
         print(f"Wrote {table3_path}")
         latex_table3 = merged.to_latex(index=False, float_format=lambda x: f"{x:.3f}" if isinstance(x, float) else str(x))
-        print("\nLaTeX Table 3 (per-client):\n")
+        print(f"\nLaTeX Table 3 (per-client: {method_a} vs {method_b}):\n")
         print(latex_table3)
 
     # Optional Table 3b (per-client comparison: Central vs FedAvg).
     if {"Central", "FedAvg"} <= set(per_client_data.keys()):
         df_c = per_client_data["Central"]
         df_f = per_client_data["FedAvg"]
-        keep_cols = ["client_id", "n", "n_pos", "auprc_post", "ece_post"]
+        keep_cols = ["client_id", "n", "n_pos", "auprc_pre", "ece_pre"]
         df_c = df_c[[c for c in keep_cols if c in df_c.columns]].copy()
         df_f = df_f[[c for c in keep_cols if c in df_f.columns]].copy()
         df_c = df_c.rename(
             columns={
                 "n": "n_central",
                 "n_pos": "n_pos_central",
-                "auprc_post": "auprc_central",
-                "ece_post": "ece_central",
+                "auprc_pre": "auprc_central",
+                "ece_pre": "ece_central",
             }
         )
         df_f = df_f.rename(
             columns={
                 "n": "n_fedavg",
                 "n_pos": "n_pos_fedavg",
-                "auprc_post": "auprc_fedavg",
-                "ece_post": "ece_fedavg",
+                "auprc_pre": "auprc_fedavg",
+                "ece_pre": "ece_fedavg",
             }
         )
         merged_cf = pd.merge(df_c, df_f, on="client_id", how="inner")
@@ -489,7 +509,8 @@ def main() -> None:
         print("\nMissing information:")
         for m in missing:
             print(f"- {m}")
-        sys.exit(1)
+        if not args.allow_missing:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

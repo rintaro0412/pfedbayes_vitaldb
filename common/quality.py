@@ -169,7 +169,7 @@ def check_window_quality(
     """
     Thresholds are heuristic (physiologic ranges + artifact screening), not tied to a single paper.
     Adjust per protocol or cite a target reference if required.
-    Missingness gating uses 30s NaN ratio + max contiguous NaN length.
+    Missingness gating uses 60s NaN ratio + max contiguous NaN length.
     ECG/PPG flatline gating uses long runs of near-constant values.
     """
     abp_win = np.asarray(abp_win, dtype=np.float32)
