@@ -12,7 +12,7 @@
   - `MAP < 20` または `MAP > 200` を含む入力ウィンドウを除外
   - ABPピーク間隔（心拍周期）が生理範囲（デフォルト 0.3–2.0 秒）外の拍が一定割合を超える入力ウィンドウを除外
 - 主指標: AUPRC、補助: AUROC、校正: ECE/Brier/NLL
-- 閾値は **固定（デフォルト0.5）**。温度スケーリングは使わない
+- 閾値は 固定（デフォルト0.5）。温度スケーリングは使わない
 - 損失関数: **BCEWithLogits**（必要に応じて pos_weight を使用）
   - **Centralized**: train 全体で `pos_weight = n_neg / n_pos`
   - **Local**: クライアントごとに `pos_weight = n_neg / n_pos`
