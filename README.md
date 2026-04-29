@@ -250,80 +250,6 @@ python bayes_federated/feduab_server.py \
   --kl-coeff 1e-4 \
   --var-reduction-h 2
 
-# YAML config 例（CLI が上書き）
-python bayes_federated/feduab_server.py --config configs/feduab.yaml
-```
-
-**評価モード（同一の評価関数）**:
-- `personalized_oracle`: 最終ラウンドの各クライアント事後で、そのクライアント test を評価（主結果）
-- `global_idless`: サーバ側グローバル事後のみで全 test を評価（補助）
-- `ensemble_idless`: 13 クライアント事後の平均予測で全 test を評価（補助, 計算コスト高）
-
-**クライアント選択（論文アルゴリズム対応）**:
-- `--clients-per-round` で各ラウンドの参加クライアント数を指定（0=全員）
-- `--client-fraction` で割合指定（`clients-per-round=0` のとき有効）
-
-出力は `runs/feduab/<run_name>/` に保存され、以下を生成します:
-- `eval_modes.json / eval_modes_overall.csv / eval_modes_per_client.csv / eval_modes_client_stats.csv`
-- `checkpoints/global_last.pt` と `checkpoints/clients/client_<id>.pt`
-- NLL は MC で得た確率平均から計算（log(mean p)）で統一
-- `eval_modes.json` には uncertainty の統計（`aleatoric/epistemic/total_var`）も含まれます
-
-中断復帰（同じ run を継続）:
-
-```bash
-python bayes_federated/feduab_server.py \
-  --run-dir runs/feduab/<run_name> \
-  --rounds 100 \
-  --resume
-```
-
-`--resume` は `checkpoints/global_last.pt` と `history.csv` を読み、次のラウンドから再開します。
-
-`scripts/run_all_feduab.sh` を使う場合は、`runs/fedavg/<run_name>/per_client/<client_id>/` と
-`runs/feduab/<run_name>/per_client/<client_id>/` に、クライアント別の
-`test_report_per_client.csv` / `eval_modes_per_client.csv` / `round_client_metrics.csv`
-（存在するもののみ）を分割して保存します。既存の集計ファイルは残します。
-同スクリプト内で中央学習とローカル学習、FedAvg と FedUAB は並列で実行されます。
-
-### 6) pFedBayes（Personalized VI）
-
-各クライアントで **posterior q_i** と **localized global w_i** を交互更新し、サーバで
-`v^{t+1} = (1-β) v^t + β * mean(v_w,i)` を実行します（完全版アルゴリズム）。
-
-1. `configs/pfedbayes.yaml` の `backbone.checkpoint` を点推定モデルの checkpoint に合わせてください。
-
-2. サーバ起動（round管理・評価・**最終ラウンドモデル**でtest評価まで実行）:
-
-```bash
-python bayes_federated/pfedbayes_server.py --config configs/pfedbayes.yaml
-```
-
-3. 中断復帰:
-
-```bash
-python bayes_federated/pfedbayes_server.py --config configs/pfedbayes.yaml --resume
-```
-
-4. test評価のみ再実行（best checkpoint を使う）:
-
-```bash
-python bayes_federated/eval.py \
-  --data-dir federated_data \
-  --checkpoint runs/pfedbayes/<run_name>/checkpoints/model_best.pt \
-  --split test \
-  --mc-eval 50
-```
-
-pFedBayes の出力は `runs/pfedbayes/<run_name>/` 以下に保存されます:
-- `summary.json`
-- `history.csv`
-- `round_XXX_test.json`
-- `round_XXX_clients.json`
-- `clients/round_XXX/client_<id>.pt`（posterior / localized_global）
-- `test_report.json`
-- `checkpoints/model_best.pt`
-
 ### 6.5) FedAvg / FedUAB を同一条件・複数seedで実行
 
 ```bash
@@ -339,7 +265,7 @@ python scripts/train_federated.py \
 - 出力: `runs/<algo>/seed<seed>/<timestamp>/...`
 - 集計: `runs/summary.csv`（mode×metric の平均/分散）
 
-### 6.6) FedUAB パラメータ・スイープ（簡易グリッド）
+### 6.6) FedUAB パラメータ・スイープ
 
 ```bash
 # 例: KL係数のみをスイープ
@@ -354,7 +280,7 @@ python scripts/sweep_feduab.py \
 
 ### 7) 有意性評価（paired bootstrap）
 
-FedAvg と pFedBayes の test 指標差（例: AUPRC / ECE）について、caseid 単位の paired bootstrap で差の95%CIと p 値を出します。
+FedAvg と pFedBayes の test 指標差（例: AUPRC / ECE）について、caseid 単位の paired bootstrap で差の95%CIと p 値を出す。
 
 ```bash
 python scripts/compare_significance.py \
@@ -367,9 +293,9 @@ python scripts/compare_significance.py \
   --out runs/compare/pfedbayes_vs_fedavg_test_pre.json
 ```
 
-### 8) クライアント単位マクロ平均での比較（min_client_cases 未満は除外）
+### 8) クライアント単位マクロ平均での比較
 
-同一分割・同一閾値でクライアント別指標を計算し、case数が `min_client_cases` 以上の「適格クライアント」だけでマクロ平均（各クライアント同一重み）した指標を **seed0のみ** で比較します。`min_client_cases` 未満のクライアントは一次解析から除外し、参考値として別出力します。
+同一分割・同一閾値でクライアント別指標を計算し、case数が `min_client_cases` 以上の「適格クライアント」だけでマクロ平均（各クライアント同一重み）した指標を **seed0のみ** で比較。`min_client_cases` 未満のクライアントは一次解析から除外し、参考値として別出力。
 
 ```bash
 python scripts/eval_compare_clients.py \
@@ -384,52 +310,13 @@ python scripts/eval_compare_clients.py \
 - `compare_clients.json`: seed0 の温度、クライアント別指標、適格クライアントのマクロ平均と差分、AUPRC差の sign-flip p値など。
 - `compare_clients.csv`: method 行でマクロ平均指標を表形式で保存。
 
-## 監査可能性（ログ/メタ）
-
-- `scripts/data_download.py` は `vitaldb_data/` と `clinical_data.csv` と `download_run.json` を出力
-- `scripts/build_dataset.py` は `federated_data/` と `federated_data/summary.json` を出力
-- 学習は `run_config.json`（seed・split・pos_weight・git hash等）を保存
-
-## 論文表（Table 2〜6）用の集計
-
-ラウンド×クライアントのログから、論文の `mean (min–max)` 形式に整形するスクリプトを用意しています。
-
-```bash
-python scripts/aggregate_round_metrics.py \
-  --config configs/fedocw_tables.json \
-  --out-dir outputs/fedocw_tables \
-  --metrics auprc,auroc,brier,nll,ece,accuracy,f1
-```
-
-出力:
-- `outputs/fedocw_tables/table_A_modeA.csv`
-- `outputs/fedocw_tables/table_A_modeB.csv`
-
 ## 参考文献
 
-### 表記ルール
-- 形式: 「著者（先頭＋et al.）(年). 英語題名. 会議/誌名. DOI(あれば)」
-- 和文併記: 英語題名の直後に `【和訳】...` を付ける
-
 1. Lee H-C, et al. (2022). *VitalDB, a high-fidelity multi-parameter vital signs database in surgical patients*. Scientific Data. DOI: 10.1038/s41597-022-01411-5  
-   【和訳】手術患者の高精度な多項目バイタルデータベース VitalDB
 2. Shim J, et al. (2025). *Machine Learning Methods for the Prediction of Intraoperative Hypotension with Biosignal Waveforms*. Medicina. DOI: 10.3390/medicina61112039  
-   【和訳】生体信号波形を用いた術中低血圧予測の機械学習手法
 3. McMahan B, et al. (2017). *Communication-Efficient Learning of Deep Networks from Decentralized Data*. AISTATS.  
-   【和訳】分散データからの通信効率的な深層学習
 4. Guo C, et al. (2017). *On Calibration of Modern Neural Networks*. ICML.  
-   【和訳】現代のニューラルネットの校正
 5. Cho K, et al. (2014). *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation*. EMNLP. DOI: 10.3115/v1/D14-1179  
-   【和訳】RNN Encoder–Decoder による句表現学習
 6. Zhang Q, et al. (2022). *Personalized Federated Learning via Variational Bayesian Inference*. ICML.  
-   【和訳】変分ベイズ推論によるパーソナライズドFederated Learning
 7. Hinton GE. (2002). *Training Products of Experts by Minimizing Contrastive Divergence*. Neural Computation.  
-   【和訳】コントラストダイバージェンス最小化によるPoE学習
 8. Choe S, et al. (2021). *Short-Term Event Prediction in the Operating Room (STEP-OP) of Five-Minute Intraoperative Hypotension Using Hybrid Deep Learning*. JMIR Medical Informatics. DOI: 10.2196/31311  
-   【和訳】ハイブリッド深層学習による術中低血圧（5分先）の短期予測
-
-## TODO（最小構成のため）
-
-- ECG/PPG欠損時の「ゼロ埋め＋欠損フラグ」をモデル入力に追加（現状は前処理で欠損が多い秒が落ちるため、実質的に多欠損症例が除外されやすい）
-- より厳密な術中/導入期の抽出（現在は `--trim-start-sec/--trim-end-sec` による秒指定）
-- より高度なSQI（PPG/ECG）と、将来的な特徴量追加
