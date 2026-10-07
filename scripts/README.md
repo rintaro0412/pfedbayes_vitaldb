@@ -1,27 +1,27 @@
-# ICAISE script guide
+# ICAISE スクリプトガイド
 
-Run commands from the repository root. The public file list is `configs/icaise2026/publication_files.json`; other scripts may remain in the development worktree.
+コマンドはリポジトリのルートから実行してください。公開するファイルの一覧は `configs/icaise2026/publication_files.json` にあります。開発用の作業ツリーには、公開対象外のスクリプトも残っています。
 
-| Stage | Entry scripts | Inputs / outputs |
+| 段階 | 実行スクリプト | 入力・出力 |
 |---|---|---|
-| Data preparation | `data_download.py`, `build_dataset.py`, `pack_contiguous_dataset.py` | VitalDB download, window extraction, optional contiguous packing |
-| Split audit | `audit_patient_split_leakage.py` | Read-only clinical/file-inventory audit; aggregate overlap counts |
-| Training | `run_experiments.py` | Dispatches Centralized, Local, six federated methods and pFedBayes from the experiment manifest |
-| Local baseline | `train_local.py` | Client-specific training and final test reports |
-| Saved-result aggregation | `make_paper_ja_missing_assets.py --tables-only` | Saved run configs / per-client CSVs; setting and client-macro tables with model scope |
-| Global paper tables | `make_paper_tables_fig3.py --require-explicit-runs` | Explicit Centralized / FedAvg / pFedBayes runs; pooled metrics and reliability |
-| Significance | `compare_significance.py`, `compare_pfedbayes_vs_methods.py` | Explicit run/checkpoint comparisons; full inference/bootstrap can be expensive |
-| Uncertainty | `make_risk_coverage.py`, `make_bayesian_evaluation.py` | Saved predictions; coverage, calibration and uncertainty diagnostics |
-| Data description | `make_table1_client_summary.py`, `report_heterogeneity.py`, `make_client_split_flow_figure.py` | Client counts, distribution summaries and split workflow |
-| Learning curves | `make_icaise_training_curves.py` | Explicit method list and saved training histories |
-| Resources | `benchmark_icaise_inference.py`, `benchmark_icaise_training_resources.py` | Saved-checkpoint inference or separately authorized instrumented training |
-| Optional EDA | `make_eda_figures.py`, `make_eda_supplement.py` | Dataset summaries and sampled signals; full aggregation/bootstrap is separate work |
-| Public export | `prepare_public_release.py` | Exact allowlist to an empty isolated directory with hashes |
+| データ準備 | `data_download.py`, `build_dataset.py`, `pack_contiguous_dataset.py` | VitalDBのダウンロード、入力窓の抽出、必要に応じた連続形式への変換 |
+| 分割監査 | `audit_patient_split_leakage.py` | 臨床情報とファイル一覧を読み取り専用で確認し、分割間の重複件数を集計 |
+| 学習 | `run_experiments.py` | 実験マニフェストに従い、Centralized、Local、6つの連合学習手法、pFedBayesを実行 |
+| Local比較用モデル | `train_local.py` | クライアント別の学習と最終テスト評価レポート |
+| 保存済み結果の集計 | `make_paper_ja_missing_assets.py --tables-only` | 保存済み実行設定とクライアント別CSVから、使用モデルを区別した設定表・クライアント平均の成績表を作成 |
+| 共通モデルの論文用表 | `make_paper_tables_fig3.py --require-explicit-runs` | Centralized、FedAvg、pFedBayesの実験を明示し、全テスト窓をまとめた指標と確率予測の較正を出力 |
+| 有意差の検証 | `compare_significance.py`, `compare_pfedbayes_vs_methods.py` | 明示した実験・チェックポイントを比較。全量推論やブートストラップには大きな計算コストがかかる場合あり |
+| 不確実性 | `make_risk_coverage.py`, `make_bayesian_evaluation.py` | 保存済み予測から、coverage（予測を保持する割合）、較正、不確実性を診断 |
+| データの説明 | `make_table1_client_summary.py`, `report_heterogeneity.py`, `make_client_split_flow_figure.py` | クライアントごとの件数・分布の要約と分割手順 |
+| 学習曲線 | `make_icaise_training_curves.py` | 明示した手法一覧と保存済み学習履歴から作成 |
+| 計算資源の計測 | `benchmark_icaise_inference.py`, `benchmark_icaise_training_resources.py` | 保存済みチェックポイントによる推論、または別途確認して実行する計測付き学習 |
+| 任意の探索的データ解析（EDA） | `make_eda_figures.py`, `make_eda_supplement.py` | データセットの要約と抽出した信号の解析。全量集計・ブートストラップは別の作業として実施 |
+| 公開用ファイルの書き出し | `prepare_public_release.py` | 公開対象リストのファイルだけを空の独立したディレクトリへ書き出し、ハッシュ値を記録 |
 
-`run_all_pfedbayes.sh` delegates to the manifest runner and defaults to planning. Its explicitly requested legacy path is retained for compatibility; its seed/path conventions are not the public protocol.
+`run_all_pfedbayes.sh` はマニフェストに従う実験実行スクリプトを呼び出し、既定では実行計画の表示だけを行います。明示的に指定した場合の旧実行方式は、互換性のため残しています。その乱数種・パスの規則は公開版の実験手順とは異なります。
 
-Training implementations remain in `centralized/train.py`, `federated/server.py` / `client.py` and `bayes_federated/pfedbayes_server.py` / `pfedbayes_client.py`. Evaluation is implemented in `centralized/eval.py`, the existing trainers and `bayes_federated/eval.py`. Shared loading, metrics and experiment records remain in `common/`.
+学習の実装は、引き続き `centralized/train.py`、`federated/server.py` / `client.py`、`bayes_federated/pfedbayes_server.py` / `pfedbayes_client.py` にあります。評価は `centralized/eval.py`、既存の学習スクリプト、`bayes_federated/eval.py` に実装しています。共通のデータ読み込み、評価指標、実験記録は `common/` にあります。
 
-The single generated method list can be passed to the table builder, learning-curve plotter and inference benchmark. `curve_kind` and `inference_kind` are separate because each consumer has a different input contract. Prefer explicit run paths over automatic discovery for paper artifacts.
+生成した同じ手法一覧を、表の作成、学習曲線の描画、推論の計測に渡せます。各スクリプトが求める入力形式が異なるため、`curve_kind` と `inference_kind` は別の項目です。論文用の成果物を作成するときは、自動検出に頼らず実験出力のパスを明示してください。
 
-See [the complete protocol](../docs/icaise2026.md) for commands, known limitations and the distinction between global client-macro and personalized-posterior evaluation.
+コマンド、既知の制約、共通モデルのクライアント平均（client-macro）評価と個人化した事後分布による評価の違いは、[実験手順の詳細](../docs/icaise2026.md)を参照してください。

@@ -3,7 +3,7 @@
   "source": "current_worktree",
   "file_list_sha256": "12011bdf30f7d3a0f71837c588f05eeced1e6ad6f5c6db99c3ae6b7964b79809",
   "file_count": 114,
-  "total_bytes": 1977028,
+  "total_bytes": 1980011,
   "files": [
     {
       "path": ".gitignore",
@@ -20,14 +20,14 @@
     {
       "path": "README.icaise2026.md",
       "source_path": "README.icaise2026.md",
-      "sha256": "89682fa7037f0e2e216e8b9fdbcf98f78ae9d9cdaef3c99c3a20b9a079f664d8",
-      "bytes": 2761
+      "sha256": "1c9236e7a2e8b141e8d10817274e39dbdb5d5fdbefc6849a6b31e7ee7dcba3f9",
+      "bytes": 3746
     },
     {
       "path": "README.md",
       "source_path": "README.icaise2026.md",
-      "sha256": "89682fa7037f0e2e216e8b9fdbcf98f78ae9d9cdaef3c99c3a20b9a079f664d8",
-      "bytes": 2761
+      "sha256": "1c9236e7a2e8b141e8d10817274e39dbdb5d5fdbefc6849a6b31e7ee7dcba3f9",
+      "bytes": 3746
     },
     {
       "path": "artifacts/icaise2026/figures/fig1_client_split_flow.png",
@@ -494,8 +494,8 @@
     {
       "path": "scripts/README.md",
       "source_path": "scripts/README.md",
-      "sha256": "b596124bc5687fe62764a27c93c66fdfd59676aaae2fa6ab3b781737a18f471a",
-      "bytes": 3091
+      "sha256": "ad356cde607a43ef10ac704b7ac5eb59251776cfbd1d5ef6d5d593f34fe98051",
+      "bytes": 4104
     },
     {
       "path": "scripts/__init__.py",
