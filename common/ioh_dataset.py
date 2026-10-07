@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,24 +19,6 @@ class WindowSpec:
     @property
     def window_samples(self) -> int:
         return int(self.fs_wave * self.window_sec)
-
-
-class _CaseCache:
-    def __init__(self, max_cases: int):
-        self.max_cases = int(max_cases)
-        self._cache: "OrderedDict[str, Dict[str, np.ndarray]]" = OrderedDict()
-
-    def get(self, path: str) -> Optional[Dict[str, np.ndarray]]:
-        if path not in self._cache:
-            return None
-        self._cache.move_to_end(path)
-        return self._cache[path]
-
-    def put(self, path: str, data: Dict[str, np.ndarray]) -> None:
-        self._cache[path] = data
-        self._cache.move_to_end(path)
-        if self.max_cases > 0 and len(self._cache) > self.max_cases:
-            self._cache.popitem(last=False)
 
 
 def _fill_nan_1d(x: np.ndarray) -> np.ndarray:
@@ -106,45 +87,33 @@ class IOHWindowDataset(Dataset):
         df = df.reset_index(drop=True)
         self.df = df
         self.window = window
-        self.cache = _CaseCache(max_cases=cache_cases)
+        # Backward compatibility only: case caching is intentionally disabled.
+        self.cache_cases = 0
         self.return_meta = bool(return_meta)
 
     def __len__(self) -> int:
         return int(len(self.df))
 
-    def _load_case(self, path: str) -> Dict[str, np.ndarray]:
-        cached = self.cache.get(path)
-        if cached is not None:
-            return cached
-
+    def _load_window(self, path: str, s_sec: int, e_sec: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"processed case not found: {p}")
 
         with np.load(p, allow_pickle=False) as z:
-            out = {
-                "abp_100hz": np.asarray(z["abp_100hz"], dtype=np.float32),
-                "ecg_100hz": np.asarray(z["ecg_100hz"], dtype=np.float32),
-                "ppg_100hz": np.asarray(z["ppg_100hz"], dtype=np.float32),
-                "fs_wave": int(z["fs_wave"]) if "fs_wave" in z else 100,
-            }
-        self.cache.put(str(p), out)
-        return out
+            fs = int(z["fs_wave"]) if "fs_wave" in z else 100
+            s = int(s_sec) * fs
+            e = int(e_sec) * fs
+            abp = np.asarray(z["abp_100hz"][s:e], dtype=np.float32)
+            ecg = np.asarray(z["ecg_100hz"][s:e], dtype=np.float32)
+            ppg = np.asarray(z["ppg_100hz"][s:e], dtype=np.float32)
+        return abp, ecg, ppg
 
     def __getitem__(self, idx: int):
         row = self.df.iloc[int(idx)]
         case_path = str(row["processed_path"])
-        data = self._load_case(case_path)
-
-        fs = int(data.get("fs_wave", 100))
         s_sec = int(row["win_start_sec"])
         e_sec = int(row["win_end_sec"])
-        s = s_sec * fs
-        e = e_sec * fs
-
-        abp = data["abp_100hz"][s:e]
-        ecg = data["ecg_100hz"][s:e]
-        ppg = data["ppg_100hz"][s:e]
+        abp, ecg, ppg = self._load_window(case_path, s_sec, e_sec)
 
         # NaN fill then per-window z-normalization (per channel)
         abp = _z_norm(_fill_nan_1d(abp))

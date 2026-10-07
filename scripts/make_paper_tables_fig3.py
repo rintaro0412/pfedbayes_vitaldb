@@ -196,6 +196,21 @@ def _load_per_client_csv(path: Path) -> pd.DataFrame | None:
     return df
 
 
+def _client_macro_ece_from_csv(path: Path) -> float | None:
+    df = _load_per_client_csv(path)
+    if df is None or df.empty:
+        return None
+    column = "ece_pre" if "ece_pre" in df.columns else "ece"
+    if column not in df.columns:
+        return None
+    if "status" in df.columns:
+        df = df[df["status"].astype(str).str.lower().eq("ok")].copy()
+    vals = pd.to_numeric(df[column], errors="coerce").dropna()
+    if vals.empty:
+        return None
+    return float(vals.mean())
+
+
 def _compute_reliability(y_true: np.ndarray, prob: np.ndarray, *, n_bins: int) -> pd.DataFrame:
     bins = np.linspace(0.0, 1.0, int(n_bins) + 1)
     rows: list[dict[str, float]] = []
@@ -274,7 +289,13 @@ def main() -> None:
     ap.add_argument("--out-dir", default=".", help="Output directory for tables/figure.")
     ap.add_argument("--n-bins", type=int, default=15, help="Number of bins for reliability/ECE.")
     ap.add_argument("--allow-missing", action="store_true", help="Do not fail if some methods/artifacts are missing.")
+    ap.add_argument("--require-explicit-runs", action="store_true", help="Require --central-run, --fedavg-run, and --bfl-run; disable automatic run discovery for publication.")
     args = ap.parse_args()
+
+    if args.require_explicit_runs:
+        absent = [flag for flag, value in (("--central-run", args.central_run), ("--fedavg-run", args.fedavg_run), ("--bfl-run", args.bfl_run)) if not value]
+        if absent:
+            ap.error("--require-explicit-runs requires " + ", ".join(absent))
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -308,6 +329,7 @@ def main() -> None:
             [
                 "runs/bfl_batch/*/test_report.json",
                 "runs/bfl/*/test_report.json",
+                "runs/pfedbayes/*/test_report.json",
             ]
         )
         if run is not None:
@@ -356,13 +378,18 @@ def main() -> None:
     for row in methods:
         metrics = row["metrics"]
         acc = row.get("accuracy")
+        run_dir = Path(str(row.get("run_dir", ".")))
+        macro_ece = _client_macro_ece_from_csv(run_dir / "test_report_per_client.csv")
         table2_rows.append(
             {
                 "method": row["method"],
+                "model_scope": "global",
+                "aggregation": "pooled",
                 "AUROC": metrics.get("auroc"),
                 "AUPRC": metrics.get("auprc"),
                 "Accuracy": acc,
-                "ECE": metrics.get("ece"),
+                "ECE_global": metrics.get("ece"),
+                "ECE_client_macro": macro_ece,
                 "Brier": metrics.get("brier"),
                 "NLL": metrics.get("nll"),
                 "thr": row.get("threshold"),

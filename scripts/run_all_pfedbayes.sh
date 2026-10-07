@@ -1,4 +1,30 @@
 #!/usr/bin/env bash
+# ICAISE protocol entrypoint. Keep the historical implementation below intact
+# for explicit LEGACY_RUN_ALL=1 use; new invocations delegate to the manifest.
+if [[ "${LEGACY_RUN_ALL:-0}" != "1" ]]; then
+  set -euo pipefail
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  RUNNER_ARGS=()
+  STAGE_SELECTED=0
+  for ARG in "$@"; do
+    case "${ARG}" in --stage|--stage=*) STAGE_SELECTED=1 ;; esac
+  done
+  # Bare invocation is a reviewable plan. Executing requires an explicit stage.
+  if [[ "${STAGE_SELECTED}" == "0" ]]; then
+    RUNNER_ARGS+=(--dry-run)
+  fi
+  if [[ -n "${SEED:-}" ]]; then RUNNER_ARGS+=(--seeds "${SEED}"); fi
+  if [[ -n "${DATA_DIR:-}" ]]; then RUNNER_ARGS+=(--data-dir "${DATA_DIR}"); fi
+  # Do not silently discard the historical script's experiment overrides.
+  for LEGACY_VAR in CENTRAL_OUT FED_OUT PFB_OUT LOCAL_OUT PFB_CFG BATCH_TRAIN BATCH_CENTRAL BATCH_FED BATCH_PFB EPOCHS_CENTRAL ROUNDS_FED LOCAL_EPOCHS_FED ROUNDS_PFB LOCAL_EPOCHS_PFB NUM_WORKERS MC_EVAL SAVE_TEST_PRED LOG_CLIENT_SIM BACKBONE_CKPT PER_CLIENT_EVERY_ROUND SKIP_EXISTING THRESHOLD TABLE_CFG; do
+    if [[ -n "${!LEGACY_VAR:-}" ]]; then
+      echo "ERROR: ${LEGACY_VAR} is a historical override; declare it in the ICAISE manifest/configs, or explicitly use LEGACY_RUN_ALL=1." >&2
+      exit 2
+    fi
+  done
+  exec "${PYTHON:-python}" "${SCRIPT_DIR}/run_experiments.py" "${RUNNER_ARGS[@]}" "$@"
+fi
+
 # Run centralized, FedAvg, and pFedBayes (BFL) training/evaluation on the same dataset split,
 # then generate comparison artifacts for paper figures/tables.
 set -euo pipefail
@@ -17,7 +43,10 @@ BATCH_CENTRAL="${BATCH_CENTRAL:-${BATCH_TRAIN}}"
 BATCH_FED="${BATCH_FED:-${BATCH_TRAIN}}"
 BATCH_PFB="${BATCH_PFB:-${BATCH_TRAIN}}"
 EPOCHS_CENTRAL="${EPOCHS_CENTRAL:-100}"
-ROUNDS_FED="${ROUNDS_FED:-100}"
+ROUNDS_FED="${ROUNDS_FED:-${EPOCHS_CENTRAL}}"
+LOCAL_EPOCHS_FED="${LOCAL_EPOCHS_FED:-1}"
+ROUNDS_PFB="${ROUNDS_PFB:-${ROUNDS_FED}}"
+LOCAL_EPOCHS_PFB="${LOCAL_EPOCHS_PFB:-${LOCAL_EPOCHS_FED}}"
 NUM_WORKERS="${NUM_WORKERS:-64}"
 MC_EVAL="${MC_EVAL:-25}" # pFedBayesの評価時MCサンプリング数
 SAVE_TEST_PRED="${SAVE_TEST_PRED:-1}" # 1 to save per-sample predictions for F3
@@ -97,6 +126,7 @@ echo "Seed ${SEED}"
       --out-dir "${FED_OUT}" \
       --run-name "${RUN}" \
       --rounds "${ROUNDS_FED}" \
+      --local-epochs "${LOCAL_EPOCHS_FED}" \
       --batch-size "${BATCH_FED}" \
       --seed "${SEED}" \
       --num-workers "${NUM_WORKERS}" \
@@ -128,14 +158,14 @@ echo "Seed ${SEED}"
     TMP_CFG_DIR="${TMP_CFG_DIR:-/workspace/tmp}"
     mkdir -p "${TMP_CFG_DIR}"
     TMP_CFG="$(mktemp "${TMP_CFG_DIR}/pfedbayes_cfg_${SEED}_XXXX.yaml")"
-    python - <<'PY' "${PFB_CFG}" "${TMP_CFG}" "${PFB_OUT}" "${RUN}" "${SEED}" "${BATCH_PFB}" "${CKPT_OVERRIDE}" "${SAVE_TEST_PRED}" "${THRESHOLD}"
+    python - <<'PY' "${PFB_CFG}" "${TMP_CFG}" "${PFB_OUT}" "${RUN}" "${SEED}" "${BATCH_PFB}" "${CKPT_OVERRIDE}" "${SAVE_TEST_PRED}" "${THRESHOLD}" "${ROUNDS_PFB}" "${LOCAL_EPOCHS_PFB}"
 import sys
 from pathlib import Path
 try:
     import yaml
 except Exception as e:
     raise SystemExit("PyYAML required to edit pfedbayes config") from e
-src, dst, out_dir, run_name, seed, batch, ckpt_override, save_pred, fixed_thr = sys.argv[1:]
+src, dst, out_dir, run_name, seed, batch, ckpt_override, save_pred, fixed_thr, rounds, local_epochs = sys.argv[1:]
 cfg = yaml.safe_load(Path(src).read_text(encoding="utf-8"))
 cfg.setdefault("run", {})
 cfg["run"]["out_dir"] = out_dir
@@ -144,6 +174,8 @@ cfg["seed"] = int(seed)
 cfg.setdefault("data", {})
 cfg.setdefault("train", {})
 cfg["train"]["batch_size"] = int(batch)
+cfg["train"]["rounds"] = int(rounds)
+cfg["train"]["local_epochs"] = int(local_epochs)
 if ckpt_override:
     cfg.setdefault("backbone", {})
     cfg["backbone"]["checkpoint"] = ckpt_override

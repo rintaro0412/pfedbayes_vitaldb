@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 from bisect import bisect_right
-from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -39,15 +39,34 @@ def list_client_ids(data_dir: str) -> List[str]:
 
 def list_npz_files(data_dir: str, split: str, client_id: str | None = None) -> List[str]:
     split = str(split)
-    patterns: List[str] = []
-    if client_id:
-        patterns.append(os.path.join(str(data_dir), str(client_id), split, "*.npz"))
-    else:
-        patterns.append(os.path.join(str(data_dir), "*", split, "*.npz"))
-        patterns.append(os.path.join(str(data_dir), split, "*.npz"))
     out: List[str] = []
-    for pat in patterns:
-        out.extend(glob.glob(pat))
+    if client_id:
+        split_dir = os.path.join(str(data_dir), str(client_id), split)
+        npz = sorted(glob.glob(os.path.join(split_dir, "*.npz")))
+        if npz:
+            return npz
+        manifest = contiguous_manifest_path(split_dir)
+        if os.path.isfile(manifest):
+            return [manifest]
+        return []
+
+    split_dirs: List[str] = []
+    split_dirs.extend(sorted(glob.glob(os.path.join(str(data_dir), "*", split))))
+    split_dirs.append(os.path.join(str(data_dir), split))
+    seen_dirs = set()
+    for d in split_dirs:
+        if d in seen_dirs:
+            continue
+        seen_dirs.add(d)
+        if not os.path.isdir(d):
+            continue
+        npz = sorted(glob.glob(os.path.join(d, "*.npz")))
+        if npz:
+            out.extend(npz)
+            continue
+        manifest = contiguous_manifest_path(d)
+        if os.path.isfile(manifest):
+            out.append(manifest)
     return sorted(list(set(out)))
 
 
@@ -60,10 +79,32 @@ def list_npz_files_by_client(data_dir: str, split: str) -> Dict[str, List[str]]:
     return out
 
 
+def contiguous_manifest_path(split_dir: str) -> str:
+    return os.path.join(str(split_dir), "contiguous", "manifest.json")
+
+
+def has_contiguous_manifest(split_dir: str) -> bool:
+    return os.path.isfile(contiguous_manifest_path(split_dir))
+
+
 def scan_label_stats(files: Sequence[str]) -> Tuple[int, int]:
     pos = 0
     total = 0
     for p in files:
+        p_str = str(p)
+        if (os.path.basename(p_str) == "manifest.json") and (os.path.basename(os.path.dirname(p_str)) == "contiguous"):
+            with open(p_str, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            if str(manifest.get("format", "")) != "windowed_contiguous_v1":
+                raise ValueError(f"unsupported contiguous manifest format in {p_str}: {manifest.get('format')}")
+            base = os.path.dirname(p_str)
+            for shard in manifest.get("shards", []):
+                y_path = os.path.join(base, str(shard["y"]))
+                y = np.load(y_path, allow_pickle=False, mmap_mode="r")
+                total += int(y.shape[0])
+                if y.size:
+                    pos += int((np.asarray(y) > 0).sum())
+            continue
         with np.load(p, allow_pickle=False) as z:
             if "y" not in z:
                 raise ValueError(f"missing 'y' in {p}")
@@ -78,26 +119,10 @@ def scan_label_stats(files: Sequence[str]) -> Tuple[int, int]:
 class FileStats:
     n_samples: int
     caseid: Optional[int]
-
-
-class _FileCache:
-    def __init__(self, max_files: int):
-        self.max_files = int(max_files)
-        self._cache: "OrderedDict[str, Dict[str, np.ndarray]]" = OrderedDict()
-
-    def get(self, path: str) -> Optional[Dict[str, np.ndarray]]:
-        if path not in self._cache:
-            return None
-        self._cache.move_to_end(path)
-        return self._cache[path]
-
-    def put(self, path: str, data: Dict[str, np.ndarray]) -> None:
-        if self.max_files <= 0:
-            return
-        self._cache[path] = data
-        self._cache.move_to_end(path)
-        if len(self._cache) > self.max_files:
-            self._cache.popitem(last=False)
+    kind: str
+    source_path: str
+    shard_idx: int = -1
+    shard_offset: int = 0
 
 
 class WindowedNPZDataset(Dataset):
@@ -118,21 +143,109 @@ class WindowedNPZDataset(Dataset):
         return_meta: bool = False,
     ) -> None:
         super().__init__()
-        self.files = [str(p) for p in files]
+        self.files = self._rewrite_files_with_contiguous_manifests([str(p) for p in files])
         if not self.files:
             raise ValueError("no .npz files provided")
 
         self.return_meta = bool(return_meta)
-        self.cache_in_memory = bool(cache_in_memory)
-        self.cache_dtype = str(cache_dtype)
-        self.cache = _FileCache(max_files=int(max_cache_files))
+        # Backward compatibility only: file caching is intentionally disabled.
+        self.cache_in_memory = False
+        self.max_cache_files = 0
+        self.cache_dtype = "float32"
 
+        self._contig_shards: List[Dict[str, Any]] = []
         self.file_stats: List[FileStats] = []
         has_clin = None
         wave_channels = None
         window_size = None
         clin_dim = None
         for p in self.files:
+            if self._is_contiguous_manifest(p):
+                manifest = self._read_contiguous_manifest(p)
+                m_channels = int(manifest["wave_channels"])
+                m_window = int(manifest["window_size"])
+                m_has_clin = bool(manifest.get("has_clin", False))
+                m_clin_dim = int(manifest.get("clin_dim", 0))
+                if wave_channels is None:
+                    wave_channels = m_channels
+                    window_size = m_window
+                else:
+                    if int(m_channels) != int(wave_channels):
+                        raise ValueError(f"channel mismatch in {p}: {m_channels} != {wave_channels}")
+                    if int(m_window) != int(window_size):
+                        raise ValueError(f"window size mismatch in {p}: {m_window} != {window_size}")
+                if require_window_size is not None and int(m_window) != int(require_window_size):
+                    raise ValueError(f"window size mismatch in {p}: {m_window} != {require_window_size}")
+                if has_clin is None:
+                    has_clin = bool(m_has_clin)
+                elif bool(m_has_clin) != bool(has_clin):
+                    raise ValueError(f"x_clin presence mismatch across files: {p}")
+                if m_has_clin:
+                    if clin_dim is None:
+                        clin_dim = int(m_clin_dim)
+                    elif int(m_clin_dim) != int(clin_dim):
+                        raise ValueError(f"clinical dim mismatch in {p}: {m_clin_dim} != {clin_dim}")
+
+                base = os.path.dirname(p)
+                shard_base = len(self._contig_shards)
+                for shard in manifest["shards"]:
+                    x_wave_path = os.path.join(base, str(shard["x_wave"]))
+                    y_path = os.path.join(base, str(shard["y"]))
+                    x_wave_mm = np.load(x_wave_path, allow_pickle=False, mmap_mode="r")
+                    y_mm = np.load(y_path, allow_pickle=False, mmap_mode="r")
+                    if x_wave_mm.ndim != 3:
+                        raise ValueError(f"x_wave must be (N,C,T) in {x_wave_path}, got {x_wave_mm.shape}")
+                    if y_mm.ndim != 1:
+                        raise ValueError(f"y must be (N,) in {y_path}, got {y_mm.shape}")
+                    if int(x_wave_mm.shape[0]) != int(y_mm.shape[0]):
+                        raise ValueError(f"x_wave/y sample mismatch in shard {x_wave_path}")
+                    x_clin_mm = None
+                    if m_has_clin:
+                        if "x_clin" not in shard:
+                            raise ValueError(f"missing x_clin entry in manifest shard: {p}")
+                        x_clin_path = os.path.join(base, str(shard["x_clin"]))
+                        x_clin_mm = np.load(x_clin_path, allow_pickle=False, mmap_mode="r")
+                        if x_clin_mm.ndim != 2:
+                            raise ValueError(f"x_clin must be (N,F) in {x_clin_path}, got {x_clin_mm.shape}")
+                        if int(x_clin_mm.shape[0]) != int(y_mm.shape[0]):
+                            raise ValueError(f"x_clin/y sample mismatch in shard {x_clin_path}")
+                    self._contig_shards.append({"x_wave": x_wave_mm, "y": y_mm, "x_clin": x_clin_mm})
+
+                case_segments = manifest.get("case_segments", [])
+                if case_segments:
+                    for seg in case_segments:
+                        n = int(seg.get("n_samples", 0))
+                        if n <= 0:
+                            continue
+                        caseid_raw = seg.get("caseid", None)
+                        caseid = int(caseid_raw) if caseid_raw is not None else None
+                        self.file_stats.append(
+                            FileStats(
+                                n_samples=n,
+                                caseid=caseid,
+                                kind="contig",
+                                source_path=str(p),
+                                shard_idx=int(shard_base + int(seg["shard"])),
+                                shard_offset=int(seg["offset"]),
+                            )
+                        )
+                else:
+                    for i, shard in enumerate(manifest["shards"]):
+                        n = int(shard.get("n_samples", 0))
+                        if n <= 0:
+                            continue
+                        self.file_stats.append(
+                            FileStats(
+                                n_samples=n,
+                                caseid=None,
+                                kind="contig",
+                                source_path=str(p),
+                                shard_idx=int(shard_base + i),
+                                shard_offset=0,
+                            )
+                        )
+                continue
+
             with np.load(p, allow_pickle=False, mmap_mode="r") as z:
                 if "x_wave" not in z or "y" not in z:
                     raise ValueError(f"missing x_wave/y in {p}")
@@ -165,7 +278,14 @@ class WindowedNPZDataset(Dataset):
                         clin_dim = int(x_clin.shape[1])
                     elif int(x_clin.shape[1]) != int(clin_dim):
                         raise ValueError(f"clinical dim mismatch in {p}: {x_clin.shape[1]} != {clin_dim}")
-                self.file_stats.append(FileStats(n_samples=n, caseid=parse_caseid_from_path(p)))
+                self.file_stats.append(
+                    FileStats(
+                        n_samples=n,
+                        caseid=parse_caseid_from_path(p),
+                        kind="npz",
+                        source_path=str(p),
+                    )
+                )
 
         if has_clin is None:
             has_clin = False
@@ -192,6 +312,49 @@ class WindowedNPZDataset(Dataset):
 
         self._sizes = np.array([fs.n_samples for fs in self.file_stats], dtype=np.int64)
         self._cum = np.cumsum(self._sizes)
+        if self._cum.size <= 0:
+            raise ValueError("no samples found in files")
+
+    @staticmethod
+    def _is_contiguous_manifest(path: str) -> bool:
+        p = str(path)
+        return (os.path.basename(p) == "manifest.json") and (os.path.basename(os.path.dirname(p)) == "contiguous")
+
+    @staticmethod
+    def _rewrite_files_with_contiguous_manifests(files: Sequence[str]) -> List[str]:
+        by_split_dir: Dict[str, List[str]] = {}
+        passthrough: List[str] = []
+        for raw in files:
+            p = str(raw)
+            if WindowedNPZDataset._is_contiguous_manifest(p):
+                passthrough.append(p)
+                continue
+            if p.endswith(".npz"):
+                by_split_dir.setdefault(os.path.dirname(p), []).append(p)
+            else:
+                passthrough.append(p)
+
+        selected: List[str] = []
+        for split_dir in sorted(by_split_dir.keys()):
+            manifest = contiguous_manifest_path(split_dir)
+            if os.path.isfile(manifest):
+                selected.append(manifest)
+            else:
+                selected.extend(sorted(set(by_split_dir[split_dir])))
+        selected.extend(sorted(set(passthrough)))
+        return selected
+
+    @staticmethod
+    def _read_contiguous_manifest(path: str) -> Dict[str, Any]:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        if not isinstance(obj, dict):
+            raise ValueError(f"invalid contiguous manifest (not dict): {path}")
+        if str(obj.get("format", "")) != "windowed_contiguous_v1":
+            raise ValueError(f"unsupported contiguous manifest format in {path}: {obj.get('format')}")
+        if "shards" not in obj or not isinstance(obj["shards"], list):
+            raise ValueError(f"invalid contiguous manifest shards in {path}")
+        return obj
 
     @property
     def file_sizes(self) -> List[int]:
@@ -217,40 +380,43 @@ class WindowedNPZDataset(Dataset):
         local = idx - prev
         return file_idx, local
 
-    def _load_file(self, file_idx: int) -> Dict[str, np.ndarray]:
-        path = self.files[int(file_idx)]
-        cached = self.cache.get(path)
-        if cached is not None:
-            return cached
-
-        with np.load(path, allow_pickle=False) as z:
-            x_wave = z["x_wave"]
-            y = z["y"]
-            x_clin = z["x_clin"] if ("x_clin" in z and self.use_clin) else None
-
-        if self.cache_in_memory:
-            dtype = np.float16 if self.cache_dtype == "float16" else np.float32
-            x_wave = np.asarray(x_wave, dtype=dtype)
-            y = np.asarray(y, dtype=np.int64)
-            if x_clin is not None:
-                x_clin = np.asarray(x_clin, dtype=np.float32)
-        data = {"x_wave": x_wave, "y": y}
-        if x_clin is not None:
-            data["x_clin"] = x_clin
-        self.cache.put(path, data)
-        return data
+    def _load_sample(self, file_idx: int, local: int) -> Tuple[np.ndarray, float, Optional[np.ndarray]]:
+        fs = self.file_stats[int(file_idx)]
+        if fs.kind == "npz":
+            path = fs.source_path
+            with np.load(path, allow_pickle=False) as z:
+                x = np.array(z["x_wave"][local], dtype=np.float32, copy=True)
+                y = float(np.asarray(z["y"][local]))
+                clin: Optional[np.ndarray] = None
+                if self.use_clin:
+                    if "x_clin" not in z:
+                        raise ValueError(f"missing x_clin in {path}")
+                    clin = np.array(z["x_clin"][local], dtype=np.float32, copy=True)
+            return x, y, clin
+        if fs.kind == "contig":
+            shard = self._contig_shards[int(fs.shard_idx)]
+            pos = int(fs.shard_offset) + int(local)
+            x = np.array(shard["x_wave"][pos], dtype=np.float32, copy=True)
+            y = float(np.asarray(shard["y"][pos]))
+            clin = None
+            if self.use_clin:
+                x_clin_arr = shard.get("x_clin", None)
+                if x_clin_arr is None:
+                    raise ValueError(f"missing x_clin in contiguous shard: {fs.source_path}")
+                clin = np.array(x_clin_arr[pos], dtype=np.float32, copy=True)
+            return x, y, clin
+        raise ValueError(f"unknown file stat kind: {fs.kind}")
 
     def __getitem__(self, idx: int):
         file_idx, local = self._locate(idx)
-        data = self._load_file(file_idx)
-        x = np.asarray(data["x_wave"][local], dtype=np.float32)
-        y = float(np.asarray(data["y"][local]))
+        x, y, clin = self._load_sample(file_idx, local)
 
         x_t = torch.from_numpy(x).float()
         y_t = torch.tensor([y], dtype=torch.float32)
 
         if self.use_clin:
-            clin = np.asarray(data["x_clin"][local], dtype=np.float32)
+            if clin is None:
+                raise ValueError(f"missing x_clin for file index {file_idx}")
             clin_t = torch.from_numpy(clin).float()
             payload = ((x_t, clin_t), y_t)
         else:
@@ -259,8 +425,9 @@ class WindowedNPZDataset(Dataset):
         if not self.return_meta:
             return payload
 
-        caseid = self.file_stats[file_idx].caseid
-        meta = {"caseid": int(caseid) if caseid is not None else int(file_idx), "file": self.files[file_idx]}
+        fs = self.file_stats[file_idx]
+        caseid = fs.caseid
+        meta = {"caseid": int(caseid) if caseid is not None else int(file_idx), "file": fs.source_path}
         if self.use_clin:
             return payload[0], payload[1], meta  # ((x, clin), y, meta)
         return payload[0], payload[1], meta  # (x, y, meta)

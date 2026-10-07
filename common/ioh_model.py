@@ -31,7 +31,7 @@ class IOHModelConfig:
     in_channels: int = 4
     base_channels: int = 32
     dropout: float = 0.1
-    use_gru: bool = True
+    use_gru: bool = False
     gru_hidden: int = 64
     clin_dim: int = 0
 
@@ -48,13 +48,15 @@ def normalize_model_cfg(raw: Dict[str, Any] | None) -> IOHModelConfig:
         cfg["use_gru"] = str(cfg["rnn_type"]).lower() == "gru"
     allowed = {"in_channels", "base_channels", "dropout", "use_gru", "gru_hidden", "clin_dim"}
     cleaned = {k: v for k, v in cfg.items() if k in allowed}
+    # GRU path is removed; keep fields only for checkpoint/config compatibility.
+    cleaned["use_gru"] = False
     return IOHModelConfig(**cleaned)
 
 
 class IOHNet(nn.Module):
     """
-    Minimal 1D CNN (optionally + GRU) for IOH prediction.
-    Input: (B, C=4, T=6000)
+    Minimal 1D CNN for binary perioperative event prediction.
+    Input: (B, C, T)
     Output: logits (B, 1)
     """
 
@@ -68,19 +70,8 @@ class IOHNet(nn.Module):
         self.block3 = ConvBlock1d(c0 * 2, c0 * 4, k=3, dropout=cfg.dropout)
 
         self.pool = nn.MaxPool1d(kernel_size=2)
-
-        self.use_gru = bool(cfg.use_gru)
-        if self.use_gru:
-            self.gru = nn.GRU(
-                input_size=c0 * 4,
-                hidden_size=int(cfg.gru_hidden),
-                num_layers=1,
-                batch_first=True,
-                bidirectional=False,
-            )
-            head_in = int(cfg.gru_hidden)
-        else:
-            head_in = c0 * 4
+        self.use_gru = False
+        head_in = c0 * 4
 
         self.use_clin = int(cfg.clin_dim) > 0
         if self.use_clin:
@@ -111,13 +102,7 @@ class IOHNet(nn.Module):
         x = self.block3(x)
         x = self.pool(x)
 
-        if self.use_gru:
-            # (B, C, T) -> (B, T, C)
-            x = x.transpose(1, 2)
-            out, _ = self.gru(x)
-            feat = out[:, -1, :]
-        else:
-            feat = x.mean(dim=-1)
+        feat = x.mean(dim=-1)
 
         if self.use_clin:
             if x_clin is None:
