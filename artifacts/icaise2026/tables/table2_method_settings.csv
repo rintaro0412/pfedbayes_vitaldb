@@ -1,0 +1,10 @@
+method,rounds_or_epochs,local_epochs,batch_size,seed,learning_rate,model_selection,selection_metric,mc_train,mc_eval,config_path,config_source,source_run_dir,model_scope
+Centralized,200,-,64,42,0.001,best,nll,,,runs/centralized/seed0/config.json,saved_run_config,runs/centralized/seed0,global
+Local,200,-,64,42,0.001,best,nll,,,runs/local/seed42/config.json,saved_run_config,runs/local/seed42,client_specific
+FedAvg,200,1,32,42,0.001,best,nll,,,runs/fedavg/seed42/config.json,saved_run_config,runs/fedavg/seed42,global
+FedProx,200,1,32,42,0.001,best,nll,,,runs/fedprox/seed42/config.json,saved_run_config,runs/fedprox/seed42,global
+SCAFFOLD,200,1,32,42,0.001,best,nll,,,runs/scaffold/seed42/config.json,saved_run_config,runs/scaffold/seed42,global
+FedNova,200,1,32,42,0.001,best,nll,,,runs/fednova/seed42/config.json,saved_run_config,runs/fednova/seed42,global
+Per-FedAvg,200,1,64,42,0.001,best,nll,,,runs/perfedavg/seed42/config.json,saved_run_config,runs/perfedavg/seed42,global
+pFedMe,200,1,64,42,0.001,best,nll,,,runs/pfedme/seed42/config.json,saved_run_config,runs/pfedme/seed42,global
+pFedBayes,200,1,64,42,"lr_q=0.001, lr_w=0.001",best,nll,5,25,runs/pfedbayes/seed42/config.json,saved_run_config,runs/pfedbayes/seed42,global

@@ -1,20 +1,18 @@
 """
-Shim et al., 2025 (Medicina) に「できるだけ」合わせて学習用セグメントを生成する。
+VitalDB を用いた術中低酸素イベント予測データセットを生成する。
 
-主要条件（本文より）
-- hypotension event: MAP <= 65 が 1 分超
-- positive: 各 hypotension event の 5 分前の 30 秒波形（入力）で予測（horizon=5min, window=60s）
-- negative: MAP > 65 が 20 分超続く "non-hypotensive segment" から抽出し、各 segment から 1 または 2 個の入力を取り、
-  全体の negative 数が positive に近くなるようにする
+主要条件
+- hypoxemia event: 1秒平均 SpO2 <= 92 が 60秒以上続く区間の開始秒。
+- positive: 各イベントの 5 分前を予測時点とし、その直前 30 秒の時系列を入力にする。
+- negative: 1秒平均 SpO2 >= 95 が 20 分以上続く安定区間から抽出し、
+  全体の negative 数が positive に近くなるようにする。
 - artifact 除外:
-  (i) ABP 波形のピーク間隔（心拍周期）が生理範囲から外れるセグメントを除外
-  (ii) MAP < 20 または > 200 のセグメントを除外
+  SpO2 が [50, 100] を外れる、または入力に非有限値を含むウィンドウを除外する。
 
 注意
-- 「心拍周期の生理範囲」の具体閾値は本文に明示されていないため、デフォルトとして
-  0.3〜2.0 秒（= 30〜200 bpm 相当）を採用する（引数で変更可）
-- 入力波形は ABP/ECG/PPG/ETCO2 の 4 波形（Shim 論文に合わせる）
-- 本リポジトリの federated 学習のため、client 分割と train/test=80/20（val なし）を採用
+- 症例数を多く残すため、ABP/MAP は必須にしない。
+- 入力は HR/SpO2/ETCO2/FIO2 の 4 チャンネルを既定とする。
+- federated 学習のため、client 分割と train/val/test=70/10/20 を採用する。
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 
 import argparse
 import json
+import math
 import shutil
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -37,11 +36,12 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-# 設定 (Medicina 2025 Paper Config)
+# 設定 (VitalDB hypoxemia prediction)
 METADATA_PATH = 'clinical_data.csv'
 SOURCE_DATA_DIR = './vitaldb_data'
 OUTPUT_BASE_DIR = './federated_data'
 FILE_EXTENSION = '.csv.gz'
+TASK_NAME = "hypoxemia_prediction"
 
 # NOTE: Uncompressed .npz gets extremely large (e.g. tens of GB). Default to compressed.
 _COMPRESS_ENV = os.environ.get("BUILD_DATASET_COMPRESS", "1").strip().lower()
@@ -56,7 +56,7 @@ if _ENV_WORKERS:
         NUM_WORKERS = _DEFAULT_WORKERS
 else:
     NUM_WORKERS = _DEFAULT_WORKERS
-SPLIT_RATIOS = {'train': 0.8, 'val': 0.0, 'test': 0.2}
+SPLIT_RATIOS = {'train': 0.7, 'val': 0.1, 'test': 0.2}
 ALL_SPLITS = ("train", "val", "test")
 ACTIVE_SPLITS = tuple(k for k in ALL_SPLITS if float(SPLIT_RATIOS.get(k, 0.0)) > 0.0)
 RANDOM_SEED = 42
@@ -66,27 +66,25 @@ FS = 100  # Hz (download で 100Hz 化済みを想定)
 WINDOW_SEC = 30
 HORIZON_MIN = 5
 
-MAP_HYPOTEN = 65.0
-HYPOTEN_MIN_DUR_SEC = 60
+SPO2_EVENT_THRESHOLD = 92.0
+SPO2_NORM_THRESHOLD = 95.0
+EVENT_MIN_DUR_SEC = 60
 NORM_MIN_DUR_SEC = 20 * 60
 
-MAP_MIN_VALID = 20.0
-MAP_MAX_VALID = 200.0
+SPO2_MIN_VALID = 50.0
+SPO2_MAX_VALID = 100.0
 
-EXCLUDED_OPTYPES = ['Transplantation', 'Cardiac Surgery']
+EXCLUDED_OPTYPES: List[str] = []
 
-# 波形は4種類
-WAVEFORMS = {
-    'ABP': 'SNUADC/ART',
-    'ECG': 'SNUADC/ECG_II',
-    'PPG': 'SNUADC/PLETH',
+# 入力は4チャンネル。SpO2 は入力にもラベル作成にも使うが、
+# 入力窓はイベントより5分前で終わるため未来情報は含まない。
+INPUT_TRACKS = {
+    'HR': 'Solar8000/HR',
+    'SPO2': 'Solar8000/PLETH_SPO2',
+    'ETCO2': 'Primus/ETCO2',
+    'FIO2': 'Primus/FIO2',
 }
-ETCO2_TRACKS = [
-    'Primus/CO2',
-    'SNUADC/ETCO2',
-    'SNUADC/CO2',
-]
-LABEL_TRACK = 'Solar8000/ART_MBP'
+LABEL_TRACK = INPUT_TRACKS['SPO2']
 
 CLINICAL_COLS = [
     "age",
@@ -109,13 +107,15 @@ CLINICAL_COLS = [
 
 def get_client_id(row):
     dept = row['department']
-    if pd.isna(dept): return None
+    if pd.isna(dept):
+        return None
     dept = str(dept).strip()
-    if dept.startswith('General'): return 'General_surgery'
-    if dept.startswith('Gynecology'): return 'Gynecology'
-    if dept.startswith('Thoracic'): return 'Thoracic_surgery'
-    if dept.startswith('Urology'): return 'Urology'
-    return None
+    if not dept:
+        return None
+    dept = re.sub(r"[^\w]+", "_", dept)
+    dept = re.sub(r"_+", "_", dept)
+    dept = dept.strip("_")
+    return dept if dept else None
 
 def robust_split(df_client, *, seed: int):
     total = len(df_client)
@@ -260,54 +260,123 @@ def detect_peaks_simple(x: np.ndarray, fs: int, min_dist_sec: float = 0.25) -> n
 
 
 def segment_ok(
-    abp_seg: np.ndarray,
-    mbp_seg: np.ndarray,
+    wave_seg: np.ndarray,
+    spo2_seg: np.ndarray,
     fs: int,
     cycle_min_sec: float,
     cycle_max_sec: float,
 ) -> bool:
     """
-    Shim 論文の artifact 除外に対応。
-    - MAP が [20,200] を外れたら除外
-    - ABP ピーク間隔（心拍周期）が生理範囲外なら除外（閾値は本文に明記無し）
+    低酸素タスク用の簡易 artifact 除外。
+    - SpO2 が [50,100] を外れたら除外
+    - 入力チャンネルに NaN/inf があれば除外
+
+    fs/cycle_* は旧 IOH パイプライン互換のため受け取るが、このタスクでは使わない。
     """
-    if abp_seg.size == 0 or mbp_seg.size == 0:
+    _ = (fs, cycle_min_sec, cycle_max_sec)
+    if wave_seg.size == 0 or spo2_seg.size == 0:
         return False
 
-    if np.nanmin(mbp_seg) < MAP_MIN_VALID or np.nanmax(mbp_seg) > MAP_MAX_VALID:
+    if not np.isfinite(wave_seg).all() or not np.isfinite(spo2_seg).all():
         return False
 
-    peaks = detect_peaks_simple(abp_seg, fs)
-    if peaks.size < 2:
+    if np.nanmin(spo2_seg) < SPO2_MIN_VALID or np.nanmax(spo2_seg) > SPO2_MAX_VALID:
         return False
 
-    cycle = np.diff(peaks) / float(fs)
-    bad_frac = float(np.mean((cycle < float(cycle_min_sec)) | (cycle > float(cycle_max_sec))))
-    return bad_frac <= 0.10
+    return True
 
 
-def extract_pos_events(map_1hz: np.ndarray) -> List[int]:
-    """hypotension interval の開始秒を event として返す"""
-    valid = np.isfinite(map_1hz) & (map_1hz >= MAP_MIN_VALID) & (map_1hz <= MAP_MAX_VALID)
-    hyp = (map_1hz <= MAP_HYPOTEN) & valid
+def extract_pos_events(spo2_1hz: np.ndarray) -> List[int]:
+    """hypoxemia interval の開始秒を event として返す。"""
+    valid = np.isfinite(spo2_1hz) & (spo2_1hz >= SPO2_MIN_VALID) & (spo2_1hz <= SPO2_MAX_VALID)
+    hyp = (spo2_1hz <= SPO2_EVENT_THRESHOLD) & valid
     intervals = find_intervals(hyp)
     events: List[int] = []
     for s, e in intervals:
-        if (e - s) >= HYPOTEN_MIN_DUR_SEC:
+        if (e - s) >= EVENT_MIN_DUR_SEC:
             events.append(int(s))
     return events
 
 
-def extract_norm_segments(map_1hz: np.ndarray) -> List[Tuple[int, int]]:
-    """MAP>65 が 20 分超の区間（秒 [start,end)）"""
-    valid = np.isfinite(map_1hz) & (map_1hz >= MAP_MIN_VALID) & (map_1hz <= MAP_MAX_VALID)
-    norm = (map_1hz > MAP_HYPOTEN) & valid
+def extract_norm_segments(spo2_1hz: np.ndarray) -> List[Tuple[int, int]]:
+    """SpO2>=95 が 20 分以上続く安定区間（秒 [start,end)）を返す。"""
+    valid = np.isfinite(spo2_1hz) & (spo2_1hz >= SPO2_MIN_VALID) & (spo2_1hz <= SPO2_MAX_VALID)
+    norm = (spo2_1hz >= SPO2_NORM_THRESHOLD) & valid
     intervals = find_intervals(norm)
     out: List[Tuple[int, int]] = []
     for s, e in intervals:
         if (e - s) >= NORM_MIN_DUR_SEC:
             out.append((int(s), int(e)))
     return out
+
+
+def _subsample_evenly(values: List[int], max_items: int) -> List[int]:
+    if max_items <= 0 or len(values) <= max_items:
+        return values
+    if max_items == 1:
+        return [values[0]]
+    idx = np.linspace(0, len(values) - 1, num=max_items, dtype=np.int64)
+    out: List[int] = []
+    seen = set()
+    for i in idx.tolist():
+        vi = int(values[int(i)])
+        if vi in seen:
+            continue
+        seen.add(vi)
+        out.append(vi)
+    if not out:
+        return values[:max_items]
+    return out
+
+
+def _positive_anchor_times(
+    *,
+    event_start_sec: int,
+    mode: str,
+    stride_sec: int,
+    max_per_event: int,
+    input_window_sec: int,
+    horizon_sec: int,
+) -> List[int]:
+    """
+    Return input_end candidates (seconds) for positive windows.
+    - single: exactly event_start - horizon (legacy behavior)
+    - within_horizon: from [event_start-horizon, event_start-1] with stride
+    """
+    ev = int(event_start_sec)
+    if str(mode) == "single":
+        return [int(ev - int(horizon_sec))]
+
+    step = max(1, int(stride_sec))
+    earliest = max(int(input_window_sec), int(ev - int(horizon_sec)))
+    latest = int(ev - 1)
+    if latest < earliest:
+        return []
+    anchors = list(range(int(earliest), int(latest) + 1, int(step)))
+    return _subsample_evenly(anchors, int(max_per_event))
+
+
+def _count_positive_units(
+    *,
+    pos_events: List[int],
+    positive_mode: str,
+    positive_stride_sec: int,
+    positive_max_per_event: int,
+) -> int:
+    total = 0
+    input_window_sec = int(WINDOW_SEC)
+    horizon_sec = int(HORIZON_MIN * 60)
+    for ev in pos_events:
+        anchors = _positive_anchor_times(
+            event_start_sec=int(ev),
+            mode=str(positive_mode),
+            stride_sec=int(positive_stride_sec),
+            max_per_event=int(positive_max_per_event),
+            input_window_sec=input_window_sec,
+            horizon_sec=horizon_sec,
+        )
+        total += int(len(anchors))
+    return int(total)
 
 
 def _read_case_series(case_path: str, cols: List[str]) -> Optional[pd.DataFrame]:
@@ -320,22 +389,23 @@ def _read_case_series(case_path: str, cols: List[str]) -> Optional[pd.DataFrame]
     df[cols] = df[cols].ffill().bfill()
     return df
 
-def _has_valid_etco2(case_path: str) -> bool:
-    """ETCO2 列が存在し、有限値が1つでもあれば True."""
-    for etco2_col in ETCO2_TRACKS:
-        df = _read_case_series(case_path, [etco2_col])
-        if df is None:
-            continue
-        etco2 = df[etco2_col].to_numpy(dtype=np.float32, copy=True)
-        if np.isfinite(etco2).any():
-            return True
-    return False
+def _has_valid_required_inputs(case_path: str) -> bool:
+    """既定入力トラックが存在し、それぞれ有限値を1つ以上持てば True."""
+    cols = list(dict.fromkeys([LABEL_TRACK] + list(INPUT_TRACKS.values())))
+    df = _read_case_series(case_path, cols)
+    if df is None:
+        return False
+    for col in cols:
+        arr = df[col].to_numpy(dtype=np.float32, copy=True)
+        if not np.isfinite(arr).any():
+            return False
+    return True
 
 
-def _etco2_worker(args: Tuple[int, str]) -> Tuple[int, bool]:
+def _required_input_worker(args: Tuple[int, str]) -> Tuple[int, bool]:
     idx, case_path = args
     try:
-        return int(idx), bool(_has_valid_etco2(str(case_path)))
+        return int(idx), bool(_has_valid_required_inputs(str(case_path)))
     except Exception:
         return int(idx), False
 
@@ -343,63 +413,61 @@ def _etco2_worker(args: Tuple[int, str]) -> Tuple[int, bool]:
 def _load_case_arrays(
     case_path: str,
     *,
-    require_etco2: bool,
-) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    base_cols = [LABEL_TRACK, WAVEFORMS["ABP"], WAVEFORMS["ECG"], WAVEFORMS["PPG"]]
-    for etco2_col in ETCO2_TRACKS:
-        cols = base_cols + [etco2_col]
-        df = _read_case_series(case_path, cols)
-        if df is None:
-            continue
-        mbp = df[LABEL_TRACK].to_numpy(dtype=np.float32, copy=True)
-        abp = df[WAVEFORMS["ABP"]].to_numpy(dtype=np.float32, copy=True)
-        ecg = df[WAVEFORMS["ECG"]].to_numpy(dtype=np.float32, copy=True)
-        ppg = df[WAVEFORMS["PPG"]].to_numpy(dtype=np.float32, copy=True)
-        etco2 = df[etco2_col].to_numpy(dtype=np.float32, copy=True)
-        if require_etco2:
-            if not np.isfinite(etco2).any():
-                continue
-            return abp, ecg, ppg, etco2, mbp
-        if not np.isfinite(etco2).any():
-            etco2 = np.zeros_like(mbp)
-        return abp, ecg, ppg, etco2, mbp
+    require_complete_inputs: bool,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    cols = list(dict.fromkeys([LABEL_TRACK] + list(INPUT_TRACKS.values())))
+    df = _read_case_series(case_path, cols)
+    if df is None:
+        return None
 
-    if not require_etco2:
-        df = _read_case_series(case_path, base_cols)
-        if df is None:
-            return None
-        mbp = df[LABEL_TRACK].to_numpy(dtype=np.float32, copy=True)
-        abp = df[WAVEFORMS["ABP"]].to_numpy(dtype=np.float32, copy=True)
-        ecg = df[WAVEFORMS["ECG"]].to_numpy(dtype=np.float32, copy=True)
-        ppg = df[WAVEFORMS["PPG"]].to_numpy(dtype=np.float32, copy=True)
-        etco2 = np.zeros_like(mbp)
-        return abp, ecg, ppg, etco2, mbp
+    label = df[LABEL_TRACK].to_numpy(dtype=np.float32, copy=True)
+    if not np.isfinite(label).any():
+        return None
 
-    return None
+    waves: List[np.ndarray] = []
+    for col in INPUT_TRACKS.values():
+        arr = df[col].to_numpy(dtype=np.float32, copy=True)
+        if not np.isfinite(arr).any():
+            if require_complete_inputs:
+                return None
+            arr = np.zeros_like(label, dtype=np.float32)
+        waves.append(arr)
+
+    n = min([int(label.size)] + [int(w.size) for w in waves])
+    if n <= 0:
+        return None
+    waves_full = np.stack([w[:n] for w in waves], axis=0).astype(np.float32, copy=False)
+    return waves_full, label[:n].astype(np.float32, copy=False)
 
 
-def _load_mbp_only(case_path: str) -> Optional[np.ndarray]:
+def _load_label_only(case_path: str) -> Optional[np.ndarray]:
     df = _read_case_series(case_path, [LABEL_TRACK])
     if df is None:
         return None
     return df[LABEL_TRACK].to_numpy(dtype=np.float32, copy=True)
 
 
-def _pass1_worker(task: Tuple[int, str]) -> Tuple[int, int, List[Tuple[int, int]]]:
-    cid, case_path = task
+def _pass1_worker(task: Tuple[int, str, str, int, int]) -> Tuple[int, int, int, List[Tuple[int, int]]]:
+    cid, case_path, positive_mode, positive_stride_sec, positive_max_per_event = task
     try:
-        mbp_100 = _load_mbp_only(case_path)
-        if mbp_100 is None:
-            return int(cid), 0, []
-        map_1hz = to_1hz_mean(mbp_100, FS)
-        if map_1hz.size == 0:
-            return int(cid), 0, []
-        pos_events = extract_pos_events(map_1hz)
-        norm_segs = extract_norm_segments(map_1hz)
+        label_100 = _load_label_only(case_path)
+        if label_100 is None:
+            return int(cid), 0, 0, []
+        label_1hz = to_1hz_mean(label_100, FS)
+        if label_1hz.size == 0:
+            return int(cid), 0, 0, []
+        pos_events = extract_pos_events(label_1hz)
+        pos_units = _count_positive_units(
+            pos_events=pos_events,
+            positive_mode=str(positive_mode),
+            positive_stride_sec=int(positive_stride_sec),
+            positive_max_per_event=int(positive_max_per_event),
+        )
+        norm_segs = extract_norm_segments(label_1hz)
         norm_segs = [(int(s), int(e)) for s, e in norm_segs]
-        return int(cid), int(len(pos_events)), norm_segs
+        return int(cid), int(len(pos_events)), int(pos_units), norm_segs
     except Exception:
-        return int(cid), 0, []
+        return int(cid), 0, 0, []
 
 
 @dataclass(frozen=True)
@@ -420,24 +488,27 @@ def build_case_segments(
     cycle_min_sec: float,
     cycle_max_sec: float,
     instance_norm: bool,
-    require_etco2: bool,
+    require_complete_inputs: bool,
+    positive_mode: str,
+    positive_stride_sec: int,
+    positive_max_per_event: int,
 ) -> Optional[CaseSegments]:
-    loaded = _load_case_arrays(case_path, require_etco2=require_etco2)
+    loaded = _load_case_arrays(case_path, require_complete_inputs=require_complete_inputs)
     if loaded is None:
         return None
-    abp_100, ecg_100, ppg_100, etco2_100, mbp_100 = loaded
+    waves_full, label_100 = loaded
+    waves_raw = waves_full
 
-    map_1hz = to_1hz_mean(mbp_100, FS)
-    if map_1hz.size == 0:
+    label_1hz = to_1hz_mean(label_100, FS)
+    if label_1hz.size == 0:
         return None
 
-    pos_events = extract_pos_events(map_1hz)
-    norm_segs = extract_norm_segments(map_1hz)
+    pos_events = extract_pos_events(label_1hz)
+    norm_segs = extract_norm_segments(label_1hz)
 
     T_input = int(WINDOW_SEC)
     H = int(HORIZON_MIN * 60)
 
-    waves_full = np.stack([abp_100, ecg_100, ppg_100, etco2_100], axis=0)  # (4, T_total)
     if instance_norm:
         mean = waves_full.mean(axis=1, keepdims=True)
         std = waves_full.std(axis=1, keepdims=True) + 1e-6
@@ -450,24 +521,32 @@ def build_case_segments(
 
     # positives
     for ev in pos_events:
-        input_end = int(ev - H)
-        input_start = int(input_end - T_input)
-        if input_start < 0:
-            continue
-        a = int(input_start * FS)
-        b = int(input_end * FS)
-        if a < 0 or b > waves_full.shape[1]:
-            continue
-        wave = waves_full[:, a:b]
-        mbp_seg = mbp_100[a:b]
-        if not segment_ok(abp_100[a:b], mbp_seg, FS, cycle_min_sec, cycle_max_sec):
-            continue
-        if np.isnan(wave).any() or np.isnan(mbp_seg).any():
-            continue
-        waves.append(wave.astype(np.float32, copy=False))
-        labels.append(1)
-        t_event.append(int(ev))
-        is_pos.append(True)
+        anchors = _positive_anchor_times(
+            event_start_sec=int(ev),
+            mode=str(positive_mode),
+            stride_sec=int(positive_stride_sec),
+            max_per_event=int(positive_max_per_event),
+            input_window_sec=int(T_input),
+            horizon_sec=int(H),
+        )
+        for input_end in anchors:
+            input_end = int(input_end)
+            input_start = int(input_end - T_input)
+            if input_start < 0:
+                continue
+            a = int(input_start * FS)
+            b = int(input_end * FS)
+            if a < 0 or b > waves_full.shape[1]:
+                continue
+            wave = waves_full[:, a:b]
+            raw_wave = waves_raw[:, a:b]
+            label_seg = label_100[a:b]
+            if not segment_ok(raw_wave, label_seg, FS, cycle_min_sec, cycle_max_sec):
+                continue
+            waves.append(wave.astype(np.float32, copy=False))
+            labels.append(1)
+            t_event.append(int(ev))
+            is_pos.append(True)
 
     # negatives: norm segment ごとに 1 or 2 個
     for (s, e) in norm_segs:
@@ -491,10 +570,9 @@ def build_case_segments(
             if a < 0 or b > waves_full.shape[1]:
                 continue
             wave = waves_full[:, a:b]
-            mbp_seg = mbp_100[a:b]
-            if not segment_ok(abp_100[a:b], mbp_seg, FS, cycle_min_sec, cycle_max_sec):
-                continue
-            if np.isnan(wave).any() or np.isnan(mbp_seg).any():
+            raw_wave = waves_raw[:, a:b]
+            label_seg = label_100[a:b]
+            if not segment_ok(raw_wave, label_seg, FS, cycle_min_sec, cycle_max_sec):
                 continue
             waves.append(wave.astype(np.float32, copy=False))
             labels.append(0)
@@ -504,7 +582,7 @@ def build_case_segments(
     if not waves:
         return None
 
-    x_wave = np.stack(waves, axis=0).astype(np.float32, copy=False)  # (N, 4, 6000)
+    x_wave = np.stack(waves, axis=0).astype(np.float32, copy=False)  # (N, C, T)
     x_clin = np.repeat(clin_vec[None, :], repeats=int(x_wave.shape[0]), axis=0).astype(np.float32, copy=False)
     y = np.asarray(labels, dtype=np.int64)
     t_arr = np.asarray(t_event, dtype=np.int64)
@@ -512,7 +590,21 @@ def build_case_segments(
     return CaseSegments(x_wave=x_wave, x_clin=x_clin, y=y, t_event=t_arr, is_pos=is_pos_arr)
 
 def convert_worker(args):
-    case_id, src_path, dst_path, clin_vec, assigned_by_seg, seed, cycle_min_sec, cycle_max_sec, instance_norm, require_etco2 = args
+    (
+        case_id,
+        src_path,
+        dst_path,
+        clin_vec,
+        assigned_by_seg,
+        seed,
+        cycle_min_sec,
+        cycle_max_sec,
+        instance_norm,
+        require_complete_inputs,
+        positive_mode,
+        positive_stride_sec,
+        positive_max_per_event,
+    ) = args
     try:
         rng = np.random.default_rng(int(seed) ^ (int(case_id) * 1000003))
         segs = build_case_segments(
@@ -523,7 +615,10 @@ def convert_worker(args):
             cycle_min_sec=float(cycle_min_sec),
             cycle_max_sec=float(cycle_max_sec),
             instance_norm=bool(instance_norm),
-            require_etco2=bool(require_etco2),
+            require_complete_inputs=bool(require_complete_inputs),
+            positive_mode=str(positive_mode),
+            positive_stride_sec=int(positive_stride_sec),
+            positive_max_per_event=int(positive_max_per_event),
         )
         if segs is None:
             return int(case_id), False, 0, 0
@@ -556,35 +651,54 @@ def convert_worker(args):
         return int(case_id), False, 0, 0
 
 
+def _split_arg_list(value: str) -> List[str]:
+    return [x.strip() for x in str(value or "").replace(",", " ").split() if x.strip()]
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Build federated dataset (Shim 2025-style segmentation)")
+    p = argparse.ArgumentParser(description="Build federated dataset (hypoxemia event prediction)")
     p.add_argument("--clinical-csv", default=METADATA_PATH)
     p.add_argument("--wave-dir", default=SOURCE_DATA_DIR, help="case_*.csv.gz があるディレクトリ")
     p.add_argument("--out-dir", default=OUTPUT_BASE_DIR)
     p.add_argument("--seed", type=int, default=RANDOM_SEED)
-    p.add_argument("--cycle-min-sec", type=float, default=0.3)
-    p.add_argument("--cycle-max-sec", type=float, default=2.0)
+    p.add_argument("--cycle-min-sec", type=float, default=0.3, help="Deprecated/no-op for hypoxemia task.")
+    p.add_argument("--cycle-max-sec", type=float, default=2.0, help="Deprecated/no-op for hypoxemia task.")
     p.add_argument("--age-min", type=float, default=18.0)
     p.add_argument("--instance-norm", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument(
-        "--require-etco2",
+        "--require-complete-inputs",
+        dest="require_complete_inputs",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="ETCO2 波形が無い（全 NaN を含む）症例を除外するか",
+        help="入力4トラックのいずれかが無い（全 NaN を含む）症例を除外するか",
     )
+    p.add_argument(
+        "--require-etco2",
+        dest="require_complete_inputs",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Deprecated alias of --require-complete-inputs.",
+    )
+    p.add_argument("--ane-type", default="", help="Comma/space-separated anesthesia types to keep (default: all types).")
+    p.add_argument("--exclude-optypes", default=",".join(EXCLUDED_OPTYPES), help="Comma/space-separated optype values to exclude (default: none).")
     p.add_argument("--opname-threshold", type=int, default=150)
     p.add_argument("--min-client-cases", type=int, default=150)
     p.add_argument(
         "--min-client-pos",
         type=int,
-        default=10,
-        help="After split, drop clients whose train/test positive events are below this (0 to disable).",
+        default=3,
+        help="After split, drop clients whose train/val/test positive events are below this (0 to disable).",
     )
     p.add_argument(
         "--client-scheme",
-        choices=["department", "opname_optype"],
+        choices=["department", "opname_optype", "column"],
         default="opname_optype",
-        help="Client grouping rule (department=legacy, opname_optype=new default).",
+        help="Client grouping rule (department=one client per department, opname_optype=new default, column=use a metadata column such as facility).",
+    )
+    p.add_argument(
+        "--client-column",
+        default="",
+        help="clinical_data.csv column to use as client_id when --client-scheme column (e.g., facility).",
     )
     p.add_argument(
         "--merge-strategy",
@@ -601,15 +715,64 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma/space-separated client_id list to drop after assignment (e.g., Urology__OtherSurgery).",
     )
+    p.add_argument(
+        "--positive-mode",
+        choices=["single", "within_horizon"],
+        default="single",
+        help="Positive window extraction mode (single=legacy, within_horizon=multi-window in [event-5m,event-1s]).",
+    )
+    p.add_argument(
+        "--positive-stride-sec",
+        type=int,
+        default=60,
+        help="Stride (sec) for --positive-mode within_horizon.",
+    )
+    p.add_argument(
+        "--positive-max-per-event",
+        type=int,
+        default=0,
+        help="Cap positive windows per event for within_horizon (0=unlimited).",
+    )
+    p.add_argument(
+        "--neg-pos-ratio",
+        type=float,
+        default=0.0,
+        help="Target negative/positive ratio (by pass1 positive units). <=0 keeps legacy negative assignment.",
+    )
+    p.add_argument(
+        "--neg-max-per-segment",
+        type=int,
+        default=0,
+        help="Maximum negatives per normal segment when using --neg-pos-ratio (0=unlimited).",
+    )
     return p.parse_args()
 
 def main():
     args = parse_args()
+    if int(args.positive_stride_sec) < 1:
+        raise RuntimeError("--positive-stride-sec must be >= 1")
+    if int(args.positive_max_per_event) < 0:
+        raise RuntimeError("--positive-max-per-event must be >= 0")
+    if float(args.neg_pos_ratio) < 0:
+        raise RuntimeError("--neg-pos-ratio must be >= 0")
+    if int(args.neg_max_per_segment) < 0:
+        raise RuntimeError("--neg-max-per-segment must be >= 0")
+    client_column = str(args.client_column or "").strip()
     rng = np.random.default_rng(int(args.seed))
+    ane_types = _split_arg_list(args.ane_type)
+    excluded_optypes = _split_arg_list(args.exclude_optypes)
 
-    print("Build Dataset (Shim 2025-style)")
+    print("Build Dataset (hypoxemia event prediction)")
     print(f"  save: np.savez (compressed={USE_COMPRESSED})")
     print(f"  out_dir: {args.out_dir}")
+    print(
+        "  sampling: "
+        + f"positive_mode={args.positive_mode}, "
+        + f"positive_stride_sec={int(args.positive_stride_sec)}, "
+        + f"positive_max_per_event={int(args.positive_max_per_event)}, "
+        + f"neg_pos_ratio={float(args.neg_pos_ratio)}, "
+        + f"neg_max_per_segment={int(args.neg_max_per_segment)}"
+    )
     if os.path.exists(args.out_dir):
         shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir, exist_ok=True)
@@ -622,16 +785,25 @@ def main():
     if missing_cols:
         raise RuntimeError(f"clinical_data.csv に必要列がありません: {missing_cols}")
 
-    required_cols = ["caseid", "ane_type", "optype", "opname", "department"]
+    if args.client_scheme == "column" and not client_column:
+        raise RuntimeError("client_scheme=column のときは --client-column に clinical_data.csv の列名を指定してください。")
+
+    required_cols = ["caseid", "ane_type", "optype"]
+    if args.client_scheme == "department":
+        required_cols.append("department")
+    elif args.client_scheme == "opname_optype":
+        required_cols.extend(["opname", "department"])
+    elif args.client_scheme == "column":
+        required_cols.append(client_column)
     missing_required = [c for c in required_cols if c not in df_meta_raw.columns]
     if missing_required:
         raise RuntimeError(f"clinical_data.csv に必要列が不足しています: {missing_required}")
     
-    mask = (
-        (df_meta_raw['age'] >= float(args.age_min)) & 
-        (df_meta_raw['ane_type'] == 'General') & 
-        (~df_meta_raw['optype'].isin(EXCLUDED_OPTYPES))
-    )
+    mask = df_meta_raw['age'] >= float(args.age_min)
+    if ane_types:
+        mask = mask & df_meta_raw['ane_type'].isin(ane_types)
+    if excluded_optypes:
+        mask = mask & (~df_meta_raw['optype'].isin(excluded_optypes))
     df_meta_masked = df_meta_raw[mask].copy()
     n_raw_cases = int(len(df_meta_raw))
     n_after_basic_filter = int(len(df_meta_masked))
@@ -653,27 +825,27 @@ def main():
     n_missing_wave = int(n_after_dropna_caseid - len(df_valid))
     df_valid["caseid"] = df_valid["caseid"].astype(int)
     print(f"  Target Cases: {len(df_valid)}")
-    n_missing_etco2 = 0
-    if args.require_etco2:
-        print("  Checking ETCO2 waveform availability...")
+    n_missing_required_inputs = 0
+    if args.require_complete_inputs:
+        print("  Checking required input track availability...")
         keep_mask = [False] * int(len(df_valid))
         if NUM_WORKERS <= 1:
-            for idx, row in enumerate(tqdm(df_valid.itertuples(index=False), total=len(df_valid), desc="etco2")):
+            for idx, row in enumerate(tqdm(df_valid.itertuples(index=False), total=len(df_valid), desc="inputs")):
                 case_path = str(getattr(row, "case_path"))
-                ok = _has_valid_etco2(case_path)
+                ok = _has_valid_required_inputs(case_path)
                 keep_mask[int(idx)] = bool(ok)
         else:
-            print(f"  etco2 workers: {NUM_WORKERS}")
+            print(f"  input-check workers: {NUM_WORKERS}")
             tasks = [(int(i), str(getattr(row, "case_path"))) for i, row in enumerate(df_valid.itertuples(index=False))]
             with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-                futures = [executor.submit(_etco2_worker, t) for t in tasks]
-                for f in tqdm(as_completed(futures), total=len(futures), desc="etco2"):
+                futures = [executor.submit(_required_input_worker, t) for t in tasks]
+                for f in tqdm(as_completed(futures), total=len(futures), desc="inputs"):
                     idx, ok = f.result()
                     keep_mask[int(idx)] = bool(ok)
-        n_missing_etco2 = int(len(df_valid) - int(sum(keep_mask)))
-        if n_missing_etco2 > 0:
+        n_missing_required_inputs = int(len(df_valid) - int(sum(keep_mask)))
+        if n_missing_required_inputs > 0:
             df_valid = df_valid.loc[keep_mask].copy()
-        print(f"  Target Cases (after ETCO2 filter): {len(df_valid)}")
+        print(f"  Target Cases (after input track filter): {len(df_valid)}")
 
     def normalize_client_name(name: str) -> str:
         text = "" if name is None else str(name).strip()
@@ -690,6 +862,17 @@ def main():
         missing_client_id = int(df_valid["client_id"].isna().sum())
         df_valid = df_valid.dropna(subset=["client_id"]).copy()
         merged_clients: Dict[str, int] = {}
+    elif args.client_scheme == "column":
+        def has_client_value(value) -> bool:
+            if pd.isna(value):
+                return False
+            return bool(str(value).strip())
+
+        client_mask = df_valid[client_column].apply(has_client_value)
+        missing_client_id = int((~client_mask).sum())
+        df_valid = df_valid.loc[client_mask].copy()
+        df_valid["client_id"] = df_valid[client_column].apply(lambda value: normalize_client_name(str(value)))
+        merged_clients = {}
     else:
         for col in ["opname", "optype"]:
             missing_count = int(df_valid[col].isna().sum())
@@ -867,10 +1050,12 @@ def main():
 
     print("\n[client assignment]")
     print(f"  scheme: {args.client_scheme}")
-    print(f"  opname_threshold: {args.opname_threshold}")
+    if args.client_scheme == "column":
+        print(f"  client_column: {client_column}")
+    print(f"  opname_threshold: {args.opname_threshold if args.client_scheme == 'opname_optype' else 'n/a'}")
     print(f"  min_client_cases: {args.min_client_cases}")
     print(f"  min_client_pos (per split): {args.min_client_pos}")
-    print(f"  merge_strategy: {args.merge_strategy}")
+    print(f"  merge_strategy: {args.merge_strategy if args.client_scheme == 'opname_optype' else 'n/a'}")
     print(f"  final clients: {len(final_counts)}")
     for cid, cnt in sorted(final_counts.items(), key=lambda kv: kv[1], reverse=True):
         print(f"    {cid}: {cnt}")
@@ -926,15 +1111,31 @@ def main():
     # pass-1: count pos events and collect norm segments for negative assignment
     print("\n[2/3] pass1: counting events / collecting norm segments...")
     pos_by_case: Dict[int, int] = {}
+    pos_units_by_case: Dict[int, int] = {}
     norm_segments_all: List[Tuple[int, int, int]] = []  # (caseid, s, e)
     pass1_tasks = [
-        (int(getattr(row, "caseid")), str(getattr(row, "case_path")))
+        (
+            int(getattr(row, "caseid")),
+            str(getattr(row, "case_path")),
+            str(args.positive_mode),
+            int(args.positive_stride_sec),
+            int(args.positive_max_per_event),
+        )
         for row in df_valid.itertuples(index=False)
     ]
     if NUM_WORKERS <= 1:
-        for cid, case_path in tqdm(pass1_tasks, total=len(pass1_tasks), desc="pass1"):
-            _, n_pos, norm_segs = _pass1_worker((cid, case_path))
+        for cid, case_path, positive_mode, positive_stride_sec, positive_max_per_event in tqdm(pass1_tasks, total=len(pass1_tasks), desc="pass1"):
+            _, n_pos, n_pos_units, norm_segs = _pass1_worker(
+                (
+                    int(cid),
+                    str(case_path),
+                    str(positive_mode),
+                    int(positive_stride_sec),
+                    int(positive_max_per_event),
+                )
+            )
             pos_by_case[int(cid)] = int(n_pos)
+            pos_units_by_case[int(cid)] = int(n_pos_units)
             for (s, e) in norm_segs:
                 norm_segments_all.append((int(cid), int(s), int(e)))
     else:
@@ -942,12 +1143,13 @@ def main():
         with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
             futures = [executor.submit(_pass1_worker, t) for t in pass1_tasks]
             for f in tqdm(as_completed(futures), total=len(futures), desc="pass1"):
-                cid, n_pos, norm_segs = f.result()
+                cid, n_pos, n_pos_units, norm_segs = f.result()
                 pos_by_case[int(cid)] = int(n_pos)
+                pos_units_by_case[int(cid)] = int(n_pos_units)
                 for (s, e) in norm_segs:
                     norm_segments_all.append((int(cid), int(s), int(e)))
 
-    # Split by client (train/test=80/20, valなし) with pos_event stratification
+    # Split by client (train/val/test=70/10/20) with pos_event stratification
     split_map: Dict[int, str] = {}
     for client_id, group_df in df_valid.groupby("client_id"):
         train_df, val_df, test_df = stratified_split_by_pos(group_df, pos_by_case=pos_by_case, seed=int(args.seed))
@@ -986,6 +1188,7 @@ def main():
 
             keep_caseids = set(df_valid["caseid"].astype(int).tolist())
             pos_by_case = {cid: int(n) for cid, n in pos_by_case.items() if int(cid) in keep_caseids}
+            pos_units_by_case = {cid: int(n) for cid, n in pos_units_by_case.items() if int(cid) in keep_caseids}
             norm_segments_all = [(cid, s, e) for (cid, s, e) in norm_segments_all if int(cid) in keep_caseids]
 
             final_counts = (
@@ -1027,17 +1230,44 @@ def main():
             print(f"  min_client_pos: {dropped_str} (pos_events={dropped})")
 
     n_norm = int(len(norm_segments_all))
-    total_pos = sum(int(v) for v in pos_by_case.values())
+    total_pos_events = sum(int(v) for v in pos_by_case.values())
+    total_pos_units = sum(int(v) for v in pos_units_by_case.values())
+    if total_pos_units <= 0:
+        total_pos_units = int(total_pos_events)
     assigned_k: Dict[Tuple[int, int, int], int] = {(cid, s, e): 1 for (cid, s, e) in norm_segments_all}
 
     total_neg_est = n_norm
-    if total_neg_est < total_pos and n_norm > 0:
-        extra = min(int(total_pos - total_neg_est), int(n_norm))
+    if total_neg_est < total_pos_events and n_norm > 0:
+        extra = min(int(total_pos_events - total_neg_est), int(n_norm))
         chosen = rng.choice(n_norm, size=int(extra), replace=False) if extra > 0 else np.array([], dtype=int)
         for i in chosen.tolist():
             cid, s, e = norm_segments_all[int(i)]
             assigned_k[(int(cid), int(s), int(e))] = 2
         total_neg_est = n_norm + int(extra)
+
+    target_neg_est = int(total_neg_est)
+    neg_pos_ratio = float(args.neg_pos_ratio)
+    if n_norm > 0 and total_pos_units > 0 and neg_pos_ratio > 0:
+        target_neg_est = int(math.ceil(float(total_pos_units) * float(neg_pos_ratio)))
+        if target_neg_est > total_neg_est:
+            extra = int(target_neg_est - total_neg_est)
+            sampled = rng.integers(0, n_norm, size=extra, endpoint=False)
+            inc = np.bincount(sampled, minlength=n_norm).astype(np.int64)
+            added = 0
+            max_per_segment = int(args.neg_max_per_segment)
+            for idx, add in enumerate(inc.tolist()):
+                if int(add) <= 0:
+                    continue
+                cid, s, e = norm_segments_all[int(idx)]
+                key = (int(cid), int(s), int(e))
+                cur = int(assigned_k.get(key, 0))
+                if max_per_segment > 0:
+                    add = int(min(int(add), max(0, int(max_per_segment - cur))))
+                if int(add) <= 0:
+                    continue
+                assigned_k[key] = int(cur + int(add))
+                added += int(add)
+            total_neg_est = int(total_neg_est + int(added))
 
     assigned_by_case: Dict[int, Dict[Tuple[int, int], int]] = {}
     for (cid, s, e), k in assigned_k.items():
@@ -1089,11 +1319,18 @@ def main():
                 float(args.cycle_min_sec),
                 float(args.cycle_max_sec),
                 bool(args.instance_norm),
-                bool(args.require_etco2),
+                bool(args.require_complete_inputs),
+                str(args.positive_mode),
+                int(args.positive_stride_sec),
+                int(args.positive_max_per_event),
             )
         )
 
-    print(f"  cases: {len(convert_tasks)} (pos_events={total_pos}, norm_segs={n_norm}, neg_est={total_neg_est})")
+    print(
+        f"  cases: {len(convert_tasks)} "
+        + f"(pos_events={total_pos_events}, pos_units_est={total_pos_units}, norm_segs={n_norm}, "
+        + f"neg_est={total_neg_est}, neg_target={target_neg_est})"
+    )
     success_count = 0
     pos_written = 0
     neg_written = 0
@@ -1127,7 +1364,7 @@ def main():
                     cs["pos_windows"] = int(cs["pos_windows"]) + int(n_pos)
                     cs["neg_windows"] = int(cs["neg_windows"]) + int(n_neg)
     failed_cases = int(len(convert_tasks) - success_count)
-    pos_dropped_est = int(max(int(total_pos) - int(pos_written), 0))
+    pos_dropped_est = int(max(int(total_pos_units) - int(pos_written), 0))
     neg_dropped_est = int(max(int(total_neg_est) - int(neg_written), 0))
 
     case_stats = df_valid[["caseid", "client_id", "split"]].drop_duplicates().copy()
@@ -1177,9 +1414,11 @@ def main():
         "splits": {split: int((df_valid["split"] == split).sum()) for split in ACTIVE_SPLITS},
         "splits_detail": splits_detail,
         "clients_detail": clients_detail,
-        "pass1_total_pos_events": int(total_pos),
+        "pass1_total_pos_events": int(total_pos_events),
+        "pass1_total_pos_units_est": int(total_pos_units),
         "pass1_total_norm_segments": int(n_norm),
         "assigned_total_neg_windows_est": int(total_neg_est),
+        "assigned_total_neg_windows_target": int(target_neg_est),
         "written_case_files": int(success_count),
         "written_pos_windows": int(pos_written),
         "written_neg_windows": int(neg_written),
@@ -1192,7 +1431,7 @@ def main():
             "after_dropna_caseid": int(n_after_dropna_caseid),
             "dropped_missing_caseid": int(n_after_dropna_clin - n_after_dropna_caseid),
             "missing_waveform_files": int(n_missing_wave),
-            "missing_etco2_waveform": int(n_missing_etco2),
+            "missing_required_inputs": int(n_missing_required_inputs),
             "missing_client_id": int(missing_client_id),
             "missing_split": int(missing_split),
             "failed_cases_no_segments": int(failed_cases),
@@ -1202,36 +1441,55 @@ def main():
             "rates": {k: (float(v) if v is not None else None) for k, v in missing_rates.items()},
         },
         "window_drop_estimate": {
-            "pos_events": int(total_pos),
+            "pos_events": int(total_pos_events),
+            "pos_units_est": int(total_pos_units),
             "neg_est": int(total_neg_est),
+            "neg_target": int(target_neg_est),
             "pos_written": int(pos_written),
             "neg_written": int(neg_written),
             "pos_dropped_est": int(pos_dropped_est),
             "neg_dropped_est": int(neg_dropped_est),
         },
         "client_scheme": str(args.client_scheme),
+        "client_column": (client_column if client_column else None),
         "merge_strategy": str(args.merge_strategy),
         "opname_threshold": int(args.opname_threshold),
         "min_client_cases": int(args.min_client_cases),
         "min_client_pos": int(args.min_client_pos),
+        "positive_mode": str(args.positive_mode),
+        "positive_stride_sec": int(args.positive_stride_sec),
+        "positive_max_per_event": int(args.positive_max_per_event),
+        "neg_pos_ratio": float(args.neg_pos_ratio),
+        "neg_max_per_segment": int(args.neg_max_per_segment),
         "excluded_clients": {cid: int(cnt) for cid, cnt in sorted(excluded_counts.items())} if excluded_counts else {},
         "excluded_small_clients": {cid: int(cnt) for cid, cnt in sorted(excluded_small_clients.items())} if excluded_small_clients else {},
-        "excluded_low_pos_clients": {cid: int(cnt) for cid, cnt in sorted(excluded_low_pos_clients.items())} if excluded_low_pos_clients else {},
+        "excluded_low_pos_clients": {
+            cid: {split: int(v) for split, v in counts.items()}
+            for cid, counts in sorted(excluded_low_pos_clients.items())
+        } if excluded_low_pos_clients else {},
         "notes": {
-            "waveforms": ["ABP", "ECG", "PPG", "ETCO2"],
-            "tracks": {"ABP": WAVEFORMS["ABP"], "ECG": WAVEFORMS["ECG"], "PPG": WAVEFORMS["PPG"], "MBP": LABEL_TRACK},
+            "task": TASK_NAME,
+            "inputs": list(INPUT_TRACKS.keys()),
+            "tracks": dict(INPUT_TRACKS),
+            "label_track": LABEL_TRACK,
             "fs_hz": int(FS),
             "window_sec": int(WINDOW_SEC),
             "horizon_min": int(HORIZON_MIN),
-            "map_threshold": float(MAP_HYPOTEN),
-            "hypotension_min_duration_sec": int(HYPOTEN_MIN_DUR_SEC),
-            "normotension_min_duration_sec": int(NORM_MIN_DUR_SEC),
-            "artifact_map_range": [float(MAP_MIN_VALID), float(MAP_MAX_VALID)],
-            "cycle_len_sec": [float(args.cycle_min_sec), float(args.cycle_max_sec)],
+            "spo2_event_threshold": float(SPO2_EVENT_THRESHOLD),
+            "spo2_normal_threshold": float(SPO2_NORM_THRESHOLD),
+            "event_min_duration_sec": int(EVENT_MIN_DUR_SEC),
+            "normal_min_duration_sec": int(NORM_MIN_DUR_SEC),
+            "artifact_spo2_range": [float(SPO2_MIN_VALID), float(SPO2_MAX_VALID)],
             "instance_norm": bool(args.instance_norm),
-            "require_etco2": bool(args.require_etco2),
+            "require_complete_inputs": bool(args.require_complete_inputs),
+            "positive_mode": str(args.positive_mode),
+            "positive_stride_sec": int(args.positive_stride_sec),
+            "positive_max_per_event": int(args.positive_max_per_event),
+            "neg_pos_ratio": float(args.neg_pos_ratio),
+            "neg_max_per_segment": int(args.neg_max_per_segment),
+            "ane_type_filter": list(ane_types),
+            "excluded_optypes": list(excluded_optypes),
             "clinical_cols": list(CLINICAL_COLS),
-            "paper_covariate_missing": ["WBC"],
         },
     }
     with open(os.path.join(out_base, "summary.json"), "w", encoding="utf-8") as fsum:

@@ -1,0 +1,128 @@
+[
+  {
+    "key": "centralized",
+    "label": "Centralized",
+    "entrypoint": "centralized/train.py",
+    "config": "configs/icaise2026/centralized.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/centralized/seed0",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "local",
+    "label": "Local",
+    "entrypoint": "scripts/train_local.py",
+    "config": "configs/icaise2026/local.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/local/seed42",
+    "model_scope": "client_specific",
+    "curve_kind": "local_round_client",
+    "inference_kind": "local_point",
+    "mc_eval": 1
+  },
+  {
+    "key": "fedavg",
+    "label": "FedAvg",
+    "entrypoint": "federated/server.py",
+    "config": "configs/icaise2026/fedavg.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/fedavg/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "fedprox",
+    "label": "FedProx",
+    "entrypoint": "federated/server.py",
+    "config": "configs/icaise2026/fedprox.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/fedprox/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "scaffold",
+    "label": "SCAFFOLD",
+    "entrypoint": "federated/server.py",
+    "config": "configs/icaise2026/scaffold.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/scaffold/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "fednova",
+    "label": "FedNova",
+    "entrypoint": "federated/server.py",
+    "config": "configs/icaise2026/fednova.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/fednova/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "perfedavg",
+    "label": "Per-FedAvg",
+    "entrypoint": "federated/server.py",
+    "config": "configs/icaise2026/perfedavg.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/perfedavg/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "pfedme",
+    "label": "pFedMe",
+    "entrypoint": "federated/server.py",
+    "config": "configs/icaise2026/pfedme.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/pfedme/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "point",
+    "mc_eval": 1
+  },
+  {
+    "key": "pfedbayes",
+    "label": "pFedBayes",
+    "entrypoint": "bayes_federated/pfedbayes_server.py",
+    "config": "configs/icaise2026/pfedbayes.yaml",
+    "seeds": [
+      42
+    ],
+    "source_run_dir": "runs/pfedbayes/seed42",
+    "model_scope": "global",
+    "curve_kind": "history",
+    "inference_kind": "bayes",
+    "mc_eval": 25
+  }
+]

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "source_summary_path": "federated_data/summary.json",
+  "source_summary_sha256": "e73467556631cadbe3774ef695416d5c7d7b5ad9c24a13663aa893e6fc4ceb20",
+  "definition": {
+    "task": "hypoxemia_prediction",
+    "inputs": [
+      "HR",
+      "SPO2",
+      "ETCO2",
+      "FIO2"
+    ],
+    "tracks": {
+      "HR": "Solar8000/HR",
+      "SPO2": "Solar8000/PLETH_SPO2",
+      "ETCO2": "Primus/ETCO2",
+      "FIO2": "Primus/FIO2"
+    },
+    "label_track": "Solar8000/PLETH_SPO2",
+    "fs_hz": 100,
+    "window_sec": 30,
+    "horizon_min": 5,
+    "spo2_event_threshold": 92.0,
+    "spo2_normal_threshold": 95.0,
+    "event_min_duration_sec": 60,
+    "normal_min_duration_sec": 1200,
+    "artifact_spo2_range": [
+      50.0,
+      100.0
+    ],
+    "instance_norm": true,
+    "require_complete_inputs": true,
+    "positive_mode": "within_horizon",
+    "positive_stride_sec": 30,
+    "positive_max_per_event": 8,
+    "neg_pos_ratio": 2.0,
+    "neg_max_per_segment": 12,
+    "ane_type_filter": [],
+    "excluded_optypes": [],
+    "clinical_cols": [
+      "age",
+      "sex",
+      "bmi",
+      "asa",
+      "emop",
+      "preop_htn",
+      "preop_hb",
+      "preop_bun",
+      "preop_cr",
+      "preop_alb",
+      "preop_na",
+      "preop_k"
+    ]
+  },
+  "client_construction": {
+    "client_scheme": "opname_optype",
+    "client_column": null,
+    "merge_strategy": "dept_pool",
+    "opname_threshold": 100,
+    "min_client_cases": 100,
+    "min_client_pos": 3
+  },
+  "split": {
+    "unit": "caseid",
+    "ratios": [
+      0.7,
+      0.1,
+      0.2
+    ],
+    "patient_independent": false,
+    "audit_counts": {
+      "cross_client_cases": 332,
+      "cross_client_subjects": 156,
+      "cross_split_cases": 250,
+      "cross_split_subjects": 100,
+      "missing_subject_cases": 0,
+      "repeat_cases": 452,
+      "repeat_subjects": 199,
+      "subjects_with_known_id": 5369,
+      "total_cases": 5622,
+      "train_test_cases": 168,
+      "train_test_subjects": 65
+    }
+  },
+  "generation_provenance": {
+    "command": null,
+    "git_commit": null,
+    "seed": null,
+    "status": "not_established"
+  },
+  "interpretation": "Exploratory historical benchmark; within_horizon sampling, patient cross-split overlap and preprocessing limitations apply."
+}

@@ -1,8 +1,0 @@
-{
-  "scenarios": {
-    "A": {
-      "FedAvg": "runs/fedavg/seed42",
-      "FedUAB": "runs/feduab/seed42"
-    }
-  }
-}

@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "Please cite this repository when using the ICAISE experiment code or selected artifacts."
+type: software
+title: "VitalDB hypoxemia prediction pipeline: ICAISE 2026 experiments"
+authors:
+  - family-names: Washio
+    given-names: Rintaro
+repository-code: "https://github.com/rintaro0412/pfedbayes_vitaldb"
+url: "https://github.com/rintaro0412/pfedbayes_vitaldb"
+abstract: "Nine-method experimental pipeline and selected historical aggregate artifacts for intraoperative hypoxemia prediction from VitalDB. See the experiment documentation for known benchmark limitations."

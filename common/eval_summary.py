@@ -127,18 +127,24 @@ def write_eval_outputs(
                     out_row.append(row.get(k, ""))
                 writer.writerow(out_row)
 
-    # Client stats CSV
+    # Client stats CSV. "micro" is the pooled/window-level overall value;
+    # "client_macro" gives each client equal weight.
     stats_path = run_dir / f"{prefix}_client_stats.csv"
     with stats_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["mode", "stat", *METRIC_KEYS, "n_clients"])
         for mode, rep in modes.items():
+            overall = rep.get("overall", {})
             stats = rep.get("client_stats", {})
-            for stat_name in ("macro", "min", "std"):
+            row = [str(mode), "micro"]
+            for k in METRIC_KEYS:
+                row.append(overall.get(k, ""))
+            row.append(stats.get("n_clients", ""))
+            writer.writerow(row)
+            for stat_name, out_name in (("macro", "client_macro"), ("min", "client_min"), ("std", "client_std")):
                 row_dict = stats.get(stat_name, {})
-                row = [str(mode), stat_name]
+                row = [str(mode), out_name]
                 for k in METRIC_KEYS:
                     row.append(row_dict.get(k, ""))
                 row.append(stats.get("n_clients", ""))
                 writer.writerow(row)
-

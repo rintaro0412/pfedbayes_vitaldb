@@ -1,0 +1,64 @@
+# Snapshot reconstructed from the saved ICAISE run configuration.
+# Fresh replay uses a new output directory; original settings are preserved in source_configs/.
+run:
+  out_dir: runs/icaise2026/icaise2026_paper_v1/pfedbayes
+  run_name: seed42
+  resume: false
+  device: cuda
+data:
+  data_dir: federated_data
+  train_split: train
+  val_split: val
+  test_split: test
+train:
+  rounds: 200
+  local_epochs: 1
+  batch_size: 64
+  lr_q: 0.001
+  lr_w: 0.001
+  weight_decay: 0.0001
+  seed: 42
+  num_workers: 64
+  min_client_examples: 10
+  val_every_round: true
+  test_every_round: false
+  per_client_every_round: true
+  mc_train: 5
+  mc_eval: 25
+  zeta: 1
+  loss_type: bce
+  pos_weight: auto
+  grad_clip: 5.0
+  grad_clip_w: 0.0
+  max_steps: 0
+  clients_per_round: 0
+  client_fraction: 1.0
+  q_optim: adamw
+  w_optim: adamw
+  train_backbone: true
+model:
+  full_bayes: true
+  prior_sigma: 0.05
+  var_reduction_h: 1.0
+  logvar_min: -12
+  logvar_max: 6
+  param_type: rho
+  mu_init: pytorch
+  init_rho: -3
+  backbone_checkpoint: null
+  base_channels: 32
+  dropout: 0.1
+  use_gru: false
+  gru_hidden: 64
+agg:
+  server_beta: 0.25
+  client_weight_mode: uniform
+eval:
+  eval_threshold: 0.5
+  model_selection: best
+  selection_source: val
+  selection_metric: nll
+  selection_use_post: false
+  save_test_pred_npz: true
+  bootstrap_n: 100
+  bootstrap_seed: 42

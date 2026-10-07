@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "protocol_id": "icaise2026_paper_v1",
+  "paper_title": "Evaluating Bayesian Federated Learning for Medical Time-Series Classification and Uncertainty Assessment",
+  "interpretation": "Historical exploratory benchmark; see docs/icaise2026.md for task, split, preprocessing and model-scope limitations.",
+  "method_provenance": "configs/icaise2026/provenance.json",
+  "dataset_definition": "configs/icaise2026/dataset.json",
+  "artifacts": [
+    {
+      "path": "artifacts/icaise2026/tables/historical_global_performance.csv",
+      "source_path": "tables/table2_main_performance_micro.csv",
+      "source_sha256": "135de76ab57932cd914e6332e7352ca3e8b71461188cfba1037887c3d2f1256c",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/tables/training_time_resource_table.csv",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/tables/training_time_resource_table.csv",
+      "source_sha256": "52a74311a9567262daabdfc386a2674d7bb6c4e8eac3603b0c2257add07d3a02",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/tables/training_time_resource_table.md",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/tables/training_time_resource_table.md",
+      "source_sha256": "eea1feddfe7b746fdaf5fdd3ee17d58b08f9323bb7b588f5fb2d25a6708fc48a",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/tables/icaise_inference_benchmark.csv",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/tables/icaise_inference_benchmark.csv",
+      "source_sha256": "b859034298e0774592c5f2b660c5a52759614e18960496ee8ee02214adeb83c5",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/tables/risk_coverage.csv",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/tables/risk_coverage.csv",
+      "source_sha256": "4543c0b3e923ac7a5a573a11412364842a1ef7e60d10d9272014955016b6da98",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/figures/icaise_training_loss_normalized.png",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/figures/icaise_training_loss_normalized.png",
+      "source_sha256": "2166012a8515aaee778120df947e21d3201fc34e26b16759ed531873a6865274",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/figures/icaise_validation_auprc.png",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/figures/icaise_validation_auprc.png",
+      "source_sha256": "0dfb81fee68f0e6cf573b59d96a55fefeafb9c04dff8c6b0d979a3effe8ee315",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/figures/icaise_validation_nll.png",
+      "source_path": "paper_studies/icaise_evaluation/reviewer_response_materials_20260618/figures/icaise_validation_nll.png",
+      "source_sha256": "ac6f657a9ccc469a0d4623b14f2c51ec0e7aa4defa93e646a4e4694f8631debd",
+      "status": "copied_historical_aggregate"
+    },
+    {
+      "path": "artifacts/icaise2026/figures/fig1_client_split_flow.png",
+      "source_path": "figures/fig1_client_split_flow.png",
+      "source_sha256": "dc2a533ecff09067fafa47dba350427de954c040d0ae13454ce0f72e3cdc31fe",
+      "status": "copied_historical_aggregate"
+    }
+  ],
+  "recomputed_tables": {
+    "table2_method_settings.csv": "Saved source run configuration; not current root YAML.",
+    "table4_client_macro.csv": "Existing per-client CSV metrics; Local raw metric aliases fixed. Global client macro is not personalized posterior evaluation."
+  },
+  "resource_measurement": {
+    "pfedbayes_training_minutes": 2160.0,
+    "measurement_type": "projected",
+    "observed_rounds": 37,
+    "projected_rounds": 200,
+    "full_run_measured": false
+  },
+  "known_unresolved": [
+    "Dataset-generation command, seed and commit are not established.",
+    "Historical recorded code commit does not capture unrecorded dirty source changes.",
+    "Historical global per-client scores do not establish personalized posterior performance.",
+    "Current-code replay numerical equivalence has not been validated."
+  ]
+}

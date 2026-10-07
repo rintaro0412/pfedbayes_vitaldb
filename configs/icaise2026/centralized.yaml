@@ -1,0 +1,40 @@
+# Snapshot reconstructed from the saved ICAISE run configuration.
+# Fresh replay uses a new output directory; original settings are preserved in source_configs/.
+run:
+  out_dir: runs/icaise2026/icaise2026_paper_v1/centralized
+  run_name: seed42
+  resume: false
+data:
+  data_dir: federated_data
+  train_split: train
+  val_split: val
+  test_split: test
+train:
+  epochs: 200
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  seed: 42
+  num_workers: 64
+  prefetch_factor: 2
+  pin_memory: true
+  persistent_workers: true
+  cache_in_memory: false
+  max_cache_files: 32
+  cache_dtype: float32
+  log_interval: 50
+  no_progress_bar: false
+  val_every_epoch: true
+  test_every_epoch: false
+  save_round_json: true
+  per_client_every_epoch: false
+model:
+  base_channels: 32
+  dropout: 0.1
+  use_gru: false
+  gru_hidden: 64
+eval:
+  eval_threshold: 0.5
+  model_selection: best
+  selection_metric: nll
+  selection_source: val

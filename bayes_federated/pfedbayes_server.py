@@ -23,11 +23,13 @@ from bayes_federated.models import BFLModel, build_bfl_model_from_point_checkpoi
 from bayes_federated.pfedbayes_client import PFBayesClientConfig, train_client_pfedbayes
 from bayes_federated.pfedbayes_utils import aggregate_bayes_dict
 from common.checkpoint import capture_rng_state, load_checkpoint, restore_rng_state, save_checkpoint
-from common.dataset import list_client_ids, list_npz_files, list_npz_files_by_client, scan_label_stats
+from common.dataset import WindowedNPZDataset, list_client_ids, list_npz_files, list_npz_files_by_client, scan_label_stats
 from common.metrics import derived_from_confusion
 from common.experiment import make_run_dir, save_env_snapshot, seed_everything
 from common.io import read_json, write_json
-from common.ioh_model import normalize_model_cfg
+from common.ioh_model import IOHModelConfig, normalize_model_cfg
+
+_LOWER_IS_BETTER = {"ece", "brier", "nll"}
 
 
 def _load_config(path: str) -> Dict[str, Any]:
@@ -41,6 +43,52 @@ def _load_config(path: str) -> Dict[str, Any]:
             return json.loads(text)
         except Exception as e:
             raise RuntimeError("Failed to parse config. Install PyYAML or use JSON syntax.") from e
+
+
+def _cfg_get(cfg: Dict[str, Any], path: str, default: Any) -> Any:
+    cur: Any = cfg
+    for key in path.split("."):
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur if cur is not None else default
+
+
+def _cfg_get_first(cfg: Dict[str, Any], paths: List[str], default: Any) -> Any:
+    for path in paths:
+        val = _cfg_get(cfg, path, None)
+        if val is not None:
+            return val
+    return default
+
+
+def _dataset_sample_cfg(
+    data_dir: str,
+    split: str,
+    *,
+    base_channels: int,
+    dropout: float,
+    use_gru: bool,
+    gru_hidden: int,
+) -> IOHModelConfig:
+    files = list_npz_files(data_dir, split)
+    if not files:
+        raise SystemExit(f"No files found under --data-dir {data_dir} split {split}.")
+    ds = WindowedNPZDataset(
+        [files[0]],
+        use_clin="true",
+        cache_in_memory=False,
+        max_cache_files=32,
+        cache_dtype="float32",
+    )
+    return IOHModelConfig(
+        in_channels=int(getattr(ds, "wave_channels", 4) or 4),
+        base_channels=int(base_channels),
+        dropout=float(dropout),
+        use_gru=bool(use_gru),
+        gru_hidden=int(gru_hidden),
+        clin_dim=int(getattr(ds, "clin_dim", 0) or 0),
+    )
 
 
 def _flatten_bayes_mu(params: Dict[str, BayesParams] | BayesParams) -> np.ndarray:
@@ -135,6 +183,14 @@ def _format_seconds(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _is_better_score(metric_name: str, score: float, prev: float | None) -> bool:
+    if prev is None:
+        return True
+    if str(metric_name).lower() in _LOWER_IS_BETTER:
+        return float(score) < float(prev)
+    return float(score) > float(prev)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="pFedBayes server (personalized VI, full algorithm)")
     ap.add_argument("--config", default="configs/pfedbayes.yaml")
@@ -148,15 +204,37 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = _load_config(args.config)
-    resume = bool(args.resume) or bool(cfg.get("run", {}).get("resume", False))
-    run_name = args.run_name or cfg.get("run", {}).get("run_name")
-    run_dir = make_run_dir(cfg["run"]["out_dir"], run_name, resume=resume)
+    resume = bool(args.resume) or bool(_cfg_get(cfg, "run.resume", False))
+    run_name = args.run_name or _cfg_get(cfg, "run.run_name", None)
+    run_dir = make_run_dir(_cfg_get(cfg, "run.out_dir", "runs/pfedbayes"), run_name, resume=resume)
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     save_env_snapshot(run_dir, cfg)
-    seed_everything(int(cfg.get("seed", 42)), deterministic=True)
+    train_seed = int(_cfg_get_first(cfg, ["train.seed", "seed"], 42))
+    seed_everything(int(train_seed), deterministic=True)
 
-    device = torch.device(cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu")
+    device_name = str(_cfg_get_first(cfg, ["run.device", "device"], "cuda"))
+    device = torch.device(device_name if torch.cuda.is_available() else "cpu")
+
+    data_dir = str(_cfg_get(cfg, "data.data_dir", "federated_data"))
+    train_split = str(_cfg_get(cfg, "data.train_split", "train"))
+    val_split = str(_cfg_get(cfg, "data.val_split", "val"))
+    test_split = str(_cfg_get(cfg, "data.test_split", "test"))
+
+    model_base_channels = int(_cfg_get(cfg, "model.base_channels", 32))
+    model_dropout = float(_cfg_get(cfg, "model.dropout", 0.1))
+    model_use_gru = False
+    model_gru_hidden = 64
+    model_prior_sigma = float(_cfg_get_first(cfg, ["model.prior_sigma", "bayes.prior_sigma"], 0.05))
+    model_var_reduction_h = float(_cfg_get(cfg, "model.var_reduction_h", 1.0))
+    model_logvar_min = float(_cfg_get_first(cfg, ["model.logvar_min", "bayes.logvar_min"], -12.0))
+    model_logvar_max = float(_cfg_get_first(cfg, ["model.logvar_max", "bayes.logvar_max"], 6.0))
+    full_bayes = bool(_cfg_get_first(cfg, ["model.full_bayes", "bayes.full_bayes"], False))
+    param_type = str(_cfg_get_first(cfg, ["model.param_type", "bayes.param_type"], "logvar"))
+    mu_init = str(_cfg_get_first(cfg, ["model.mu_init", "bayes.mu_init"], "zeros"))
+    init_rho = _cfg_get_first(cfg, ["model.init_rho", "bayes.init_rho"], None)
+    backbone_checkpoint = _cfg_get_first(cfg, ["model.backbone_checkpoint", "backbone.checkpoint"], None)
+    train_backbone = bool(_cfg_get_first(cfg, ["train.train_backbone", "backbone.train_backbone"], False))
 
     # Prepare base model and initial global params
     resume_fallback_cfg = None
@@ -165,27 +243,29 @@ def main() -> None:
         if resume_ckpt.exists():
             ckpt = load_checkpoint(resume_ckpt, map_location="cpu")
             resume_fallback_cfg = normalize_model_cfg(ckpt.get("model_cfg", {}))
-    backbone_cfg = cfg.get("backbone", {})
-    full_bayes = bool(cfg.get("bayes", {}).get("full_bayes", False))
-    param_type = str(cfg.get("bayes", {}).get("param_type", "logvar"))
-    mu_init = str(cfg.get("bayes", {}).get("mu_init", "zeros"))
-    init_rho = cfg.get("bayes", {}).get("init_rho", None)
+    if resume_fallback_cfg is None:
+        resume_fallback_cfg = _dataset_sample_cfg(
+            data_dir,
+            train_split,
+            base_channels=model_base_channels,
+            dropout=model_dropout,
+            use_gru=model_use_gru,
+            gru_hidden=model_gru_hidden,
+        )
     model, init_prior, used_point = build_bfl_model_from_point_checkpoint(
-        backbone_cfg.get("checkpoint"),
-        prior_sigma=float(cfg["bayes"]["prior_sigma"]),
-        logvar_min=float(cfg["bayes"]["logvar_min"]),
-        logvar_max=float(cfg["bayes"]["logvar_max"]),
+        backbone_checkpoint,
+        prior_sigma=model_prior_sigma,
+        logvar_min=model_logvar_min,
+        logvar_max=model_logvar_max,
         full_bayes=bool(full_bayes),
         fallback_cfg=resume_fallback_cfg,
         param_type=param_type,
         mu_init=mu_init,
         init_rho=(float(init_rho) if init_rho is not None else None),
+        var_reduction_h=model_var_reduction_h,
     )
     base_state = model.state_dict()
 
-    data_dir = cfg["data"]["data_dir"]
-    train_split = str(cfg["data"]["train_split"])
-    test_split = str(cfg["data"]["test_split"])
     summary_path = Path(data_dir) / "summary.json"
     dataset_summary = None
     if summary_path.exists():
@@ -203,14 +283,14 @@ def main() -> None:
         write_json(clients_path, clients)
 
     # Dataset counts
-    splits = {"train": train_split, "test": test_split}
+    splits = {"train": train_split, "val": val_split, "test": test_split}
     counts = _dataset_counts(str(data_dir), splits)
     write_json(run_dir / "data_counts.json", counts)
     write_json(run_dir / "split_info.json", {"splits": splits})
     client_counts = _client_counts(str(data_dir), train_split)
     write_json(run_dir / "client_counts.json", client_counts)
     if dataset_summary:
-        keys = ["client_scheme", "merge_strategy", "opname_threshold", "min_client_cases", "clients"]
+        keys = ["client_scheme", "client_column", "merge_strategy", "opname_threshold", "min_client_cases", "clients"]
         write_json(run_dir / "dataset_summary.json", {k: dataset_summary.get(k) for k in keys if k in dataset_summary})
 
     # Resume state
@@ -230,69 +310,78 @@ def main() -> None:
             restore_rng_state(state["rng_state"])
 
     # Configs
-    loss_cfg = cfg.get("loss", {})
-    pos_weight_raw = loss_cfg.get("pos_weight", None)
+    pos_weight_raw = _cfg_get_first(cfg, ["train.pos_weight", "loss.pos_weight"], None)
     if isinstance(pos_weight_raw, str) and pos_weight_raw.strip().lower() in ("auto", "client"):
         pos_weight_val = None
     elif pos_weight_raw is None:
         pos_weight_val = None
     else:
         pos_weight_val = float(pos_weight_raw)
-    pf_cfg = cfg.get("pfedbayes", {})
     base_train_cfg = PFBayesClientConfig(
-        local_epochs=int(cfg["train"]["local_epochs"]),
-        batch_size=int(cfg["train"]["batch_size"]),
-        lr_q=float(cfg["train"]["lr_q"]),
-        lr_w=float(cfg["train"]["lr_w"]),
-        weight_decay=float(cfg["train"]["weight_decay"]),
-        num_workers=int(cfg["train"]["num_workers"]),
-        mc_train=int(cfg["train"]["mc_train"]),
-        grad_clip=float(cfg["train"].get("grad_clip", 0.0)),
-        grad_clip_w=float(cfg["train"].get("grad_clip_w", 0.0)),
-        train_backbone=bool(cfg["backbone"].get("train_backbone", False)),
-        seed=int(cfg.get("seed", 42)),
-        loss_type=str(loss_cfg.get("type", "bce")),
+        local_epochs=int(_cfg_get(cfg, "train.local_epochs", 1)),
+        batch_size=int(_cfg_get(cfg, "train.batch_size", 64)),
+        lr_q=float(_cfg_get(cfg, "train.lr_q", 1e-3)),
+        lr_w=float(_cfg_get(cfg, "train.lr_w", 1e-3)),
+        weight_decay=float(_cfg_get(cfg, "train.weight_decay", 1e-4)),
+        num_workers=int(_cfg_get(cfg, "train.num_workers", 0)),
+        mc_train=int(_cfg_get(cfg, "train.mc_train", 3)),
+        grad_clip=float(_cfg_get(cfg, "train.grad_clip", 0.0)),
+        grad_clip_w=float(_cfg_get(cfg, "train.grad_clip_w", 0.0)),
+        train_backbone=bool(train_backbone),
+        seed=int(train_seed),
+        loss_type=str(_cfg_get_first(cfg, ["train.loss_type", "loss.type"], "bce")),
         pos_weight=pos_weight_val,
-        zeta=float(pf_cfg.get("zeta", 1.0)),
-        max_steps=int(cfg["train"].get("max_steps", 0)),
-        q_optim=str(cfg["train"].get("q_optim", "sgd")),
-        w_optim=str(cfg["train"].get("w_optim", "sgd")),
+        zeta=float(_cfg_get_first(cfg, ["train.zeta", "pfedbayes.zeta"], 1.0)),
+        max_steps=int(_cfg_get(cfg, "train.max_steps", 0)),
+        q_optim=str(_cfg_get(cfg, "train.q_optim", "sgd")),
+        w_optim=str(_cfg_get(cfg, "train.w_optim", "sgd")),
         param_type=param_type,
     )
     auto_pos_weight = isinstance(pos_weight_raw, str) and pos_weight_raw.strip().lower() in ("auto", "client")
     eval_cfg = cfg.get("eval", {})
     eval_batch_size = int(eval_cfg.get("batch_size", 128))
-    eval_num_workers = int(eval_cfg.get("num_workers", cfg["train"].get("num_workers", 0)))
-    threshold_cfg = eval_cfg.get("threshold", {}) if isinstance(eval_cfg.get("threshold", {}), dict) else {}
-    test_every_round = bool(eval_cfg.get("test_every_round", False))
+    eval_num_workers = int(eval_cfg.get("num_workers", _cfg_get(cfg, "train.num_workers", 0)))
+    val_every_round = bool(_cfg_get_first(cfg, ["train.val_every_round", "eval.val_every_round"], False))
+    test_every_round = bool(_cfg_get_first(cfg, ["train.test_every_round", "eval.test_every_round"], False))
     if args.test_every_round is not None:
         test_every_round = bool(args.test_every_round)
+    val_files = list_npz_files(str(data_dir), val_split)
     test_files = list_npz_files(str(data_dir), test_split)
     selection_enabled = str(eval_cfg.get("model_selection", "last")).lower() == "best"
-    selection_source = "test"
+    selection_source = str(eval_cfg.get("selection_source", "val")).lower()
     selection_metric = str(eval_cfg.get("selection_metric", "auroc")).lower()
     selection_use_post = bool(eval_cfg.get("selection_use_post", False))
-    per_client_every_round = bool(eval_cfg.get("per_client_every_round", False))
+    per_client_every_round = bool(_cfg_get_first(cfg, ["train.per_client_every_round", "eval.per_client_every_round"], False))
     client_test_files = {}
     if per_client_every_round:
         client_test_files = list_npz_files_by_client(str(data_dir), test_split)
 
-    rounds = int(cfg["train"]["rounds"])
-    fixed_threshold = float(cfg.get("eval", {}).get("threshold", {}).get("fixed", 0.5))
-    min_client_examples = int(cfg["clients"].get("min_examples", 1))
-    sample_fraction = float(cfg["clients"].get("sample_fraction", 1.0))
-    sample_size = int(cfg["clients"].get("sample_size", 0))
-    server_beta = float(pf_cfg.get("server_beta", 1.0))
-    weight_mode = str(pf_cfg.get("weight_mode", "uniform")).lower()
-    logvar_min = float(cfg["bayes"]["logvar_min"]) if "logvar_min" in cfg.get("bayes", {}) and cfg["bayes"]["logvar_min"] is not None else None
-    logvar_max = float(cfg["bayes"]["logvar_max"]) if "logvar_max" in cfg.get("bayes", {}) and cfg["bayes"]["logvar_max"] is not None else None
+    rounds = int(_cfg_get(cfg, "train.rounds", 100))
+    fixed_threshold = float(_cfg_get_first(cfg, ["eval.eval_threshold", "eval.threshold.fixed"], 0.5))
+    min_client_examples = int(_cfg_get_first(cfg, ["train.min_client_examples", "clients.min_examples"], 1))
+    sample_fraction = float(_cfg_get_first(cfg, ["train.client_fraction", "clients.sample_fraction"], 1.0))
+    sample_size = int(_cfg_get_first(cfg, ["train.clients_per_round", "clients.sample_size"], 0))
+    server_beta = float(_cfg_get_first(cfg, ["agg.server_beta", "pfedbayes.server_beta"], 1.0))
+    weight_mode = str(_cfg_get_first(cfg, ["agg.client_weight_mode", "pfedbayes.weight_mode"], "uniform")).lower()
+    mc_eval = int(_cfg_get(cfg, "train.mc_eval", 20))
+    bootstrap_n = int(_cfg_get_first(cfg, ["eval.bootstrap_n", "eval.bootstrap.n_boot"], 1000))
+    bootstrap_seed = int(_cfg_get_first(cfg, ["eval.bootstrap_seed", "eval.bootstrap.seed"], 42))
+    logvar_min = model_logvar_min
+    logvar_max = model_logvar_max
     show_progress = not bool(args.no_progress_bar)
-    log_client_sim = bool(args.log_client_sim) or bool(cfg.get("run", {}).get("log_client_sim", False))
+    log_client_sim = bool(args.log_client_sim) or bool(_cfg_get(cfg, "run.log_client_sim", False))
+    if selection_source not in {"val", "test"}:
+        raise SystemExit(f"Unsupported eval.selection_source: {selection_source} (expected 'val' or 'test').")
+    if selection_source == "val" and not val_files:
+        raise SystemExit(f"eval.selection_source=val but no files found for split '{val_split}'.")
+    if selection_source == "test" and not test_files:
+        raise SystemExit(f"eval.selection_source=test but no files found for split '{test_split}'.")
 
     best = {"round": 0, "metric": None}
 
     eval_elapsed_sum = 0.0
     eval_round_count = 0
+    eval_per_round = int(bool(val_every_round and val_files)) + int(bool(test_every_round and test_files))
     round_iter: Any = range(start_round, rounds + 1)
     if show_progress:
         round_iter = tqdm(
@@ -307,7 +396,7 @@ def main() -> None:
     # Training rounds
     for rnd in round_iter:
         best_updated = False
-        selected = _sample_clients(clients, rnd=rnd, fraction=sample_fraction, sample_size=sample_size, seed=int(cfg.get("seed", 42)))
+        selected = _sample_clients(clients, rnd=rnd, fraction=sample_fraction, sample_size=sample_size, seed=int(train_seed))
         if not selected:
             raise SystemExit("No clients selected for round.")
 
@@ -334,13 +423,14 @@ def main() -> None:
 
             local_model = BFLModel(
                 model.cfg,
-                prior_sigma=float(cfg["bayes"]["prior_sigma"]),
-                logvar_min=float(cfg["bayes"]["logvar_min"]),
-                logvar_max=float(cfg["bayes"]["logvar_max"]),
+                prior_sigma=model_prior_sigma,
+                logvar_min=model_logvar_min,
+                logvar_max=model_logvar_max,
                 full_bayes=bool(full_bayes),
                 param_type=param_type,
                 mu_init=mu_init,
                 init_rho=(float(init_rho) if init_rho is not None else None),
+                var_reduction_h=model_var_reduction_h,
             )
             local_model.load_state_dict(base_state, strict=False)
 
@@ -405,13 +495,14 @@ def main() -> None:
         # Validation
         eval_model = BFLModel(
             model.cfg,
-            prior_sigma=float(cfg["bayes"]["prior_sigma"]),
-            logvar_min=float(cfg["bayes"]["logvar_min"]),
-            logvar_max=float(cfg["bayes"]["logvar_max"]),
+            prior_sigma=model_prior_sigma,
+            logvar_min=model_logvar_min,
+            logvar_max=model_logvar_max,
             full_bayes=bool(full_bayes),
             param_type=param_type,
             mu_init=mu_init,
             init_rho=(float(init_rho) if init_rho is not None else None),
+            var_reduction_h=model_var_reduction_h,
         )
         eval_model.load_state_dict(base_state, strict=False)
         eval_model.set_posterior(global_params)
@@ -419,8 +510,8 @@ def main() -> None:
         eval_model = eval_model.to(device)
 
         train_loss = float(train_loss_sum / max(train_loss_weight, 1))
-        eval_total = rounds if (test_every_round and bool(test_files)) else 0
-        eval_done = int(rnd - 1) if eval_total else 0
+        eval_total = int(rounds * eval_per_round)
+        eval_done = int(max(rnd - 1, 0) * eval_per_round) if eval_total else 0
         msg = (
             f"[round {rnd:03d}] train_loss={train_loss:.4f} "
             f"used={len(client_w_params)}/{len(selected)} "
@@ -440,18 +531,47 @@ def main() -> None:
                 "zeta": float(train_cfg.zeta),
             }
         )
-        if test_every_round and test_files:
+        val_report = None
+        if val_every_round and val_files:
             eval_started = time.perf_counter()
-            test_report = evaluate_split(
+            val_report = evaluate_split(
                 model=eval_model,
-                files=test_files,
-                mc_eval=int(cfg["train"]["mc_eval"]),
+                files=val_files,
+                mc_eval=mc_eval,
                 device=device,
                 temperature=None,
                 threshold=float(fixed_threshold),
                 fixed_threshold=float(fixed_threshold),
                 bootstrap_n=0,
-                bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+                bootstrap_seed=bootstrap_seed,
+                batch_size=eval_batch_size,
+                num_workers=eval_num_workers,
+            )
+            write_json(run_dir / f"round_{rnd:03d}_val.json", val_report)
+            try:
+                val_m = val_report.get("metrics_pre", {})
+                history[-1]["val_auprc"] = float(val_m.get("auprc", float("nan")))
+                history[-1]["val_auroc"] = float(val_m.get("auroc", float("nan")))
+                history[-1]["val_brier"] = float(val_m.get("brier", float("nan")))
+                history[-1]["val_nll"] = float(val_m.get("nll", float("nan")))
+                history[-1]["val_ece"] = float(val_m.get("ece", float("nan")))
+            except Exception:
+                pass
+            eval_elapsed_sum += max(0.0, time.perf_counter() - eval_started)
+            eval_round_count += 1
+            eval_done += 1
+        if test_every_round and test_files:
+            eval_started = time.perf_counter()
+            test_report = evaluate_split(
+                model=eval_model,
+                files=test_files,
+                mc_eval=mc_eval,
+                device=device,
+                temperature=None,
+                threshold=float(fixed_threshold),
+                fixed_threshold=float(fixed_threshold),
+                bootstrap_n=0,
+                bootstrap_seed=bootstrap_seed,
                 batch_size=eval_batch_size,
                 num_workers=eval_num_workers,
             )
@@ -469,7 +589,7 @@ def main() -> None:
                 pass
             eval_elapsed_sum += max(0.0, time.perf_counter() - eval_started)
             eval_round_count += 1
-            eval_done = int(rnd)
+            eval_done += 1
         if show_progress:
             postfix: Dict[str, str] = {
                 "overall": f"{rnd}/{rounds}",
@@ -480,24 +600,42 @@ def main() -> None:
                 postfix["eval_eta"] = _format_seconds(avg_eval * float(eval_total - eval_done))
             round_iter.set_postfix(postfix)
         if selection_enabled:
-            if test_files:
+            sel_report = None
+            if selection_source == "val":
+                sel_report = val_report
+                if sel_report is None and val_files:
+                    sel_report = evaluate_split(
+                        model=eval_model,
+                        files=val_files,
+                        mc_eval=mc_eval,
+                        device=device,
+                        temperature=None,
+                        threshold=float(fixed_threshold),
+                        fixed_threshold=float(fixed_threshold),
+                        bootstrap_n=0,
+                        bootstrap_seed=bootstrap_seed,
+                        batch_size=eval_batch_size,
+                        num_workers=eval_num_workers,
+                    )
+            elif test_files:
                 sel_report = evaluate_split(
                     model=eval_model,
                     files=test_files,
-                    mc_eval=int(cfg["train"]["mc_eval"]),
+                    mc_eval=mc_eval,
                     device=device,
                     temperature=None,
                     threshold=float(fixed_threshold),
                     fixed_threshold=float(fixed_threshold),
                     bootstrap_n=0,
-                    bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+                    bootstrap_seed=bootstrap_seed,
                     batch_size=eval_batch_size,
                     num_workers=eval_num_workers,
                 )
+            if sel_report is not None:
                 metrics = sel_report.get("metrics_post" if selection_use_post else "metrics_pre", {}) or {}
-                score = float(metrics.get(selection_metric, float("-inf")))
+                score = float(metrics.get(selection_metric, float("nan")))
                 prev = best.get("metric")
-                if prev is None or score > float(prev):
+                if np.isfinite(score) and _is_better_score(selection_metric, score, None if prev is None else float(prev)):
                     best = {
                         "round": int(rnd),
                         "metric": float(score),
@@ -521,13 +659,13 @@ def main() -> None:
                 rep = evaluate_split(
                     model=eval_model,
                     files=files,
-                    mc_eval=int(cfg["train"]["mc_eval"]),
+                    mc_eval=mc_eval,
                     device=device,
                     temperature=None,
                     threshold=float(sel_thr),
                     fixed_threshold=float(sel_thr),
                     bootstrap_n=0,
-                    bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+                    bootstrap_seed=bootstrap_seed,
                     batch_size=eval_batch_size,
                     num_workers=eval_num_workers,
                 )
@@ -616,13 +754,14 @@ def main() -> None:
         sel_state = load_checkpoint(ckpt_path)
         test_model = BFLModel(
             model.cfg,
-            prior_sigma=float(cfg["bayes"]["prior_sigma"]),
-            logvar_min=float(cfg["bayes"]["logvar_min"]),
-            logvar_max=float(cfg["bayes"]["logvar_max"]),
+            prior_sigma=model_prior_sigma,
+            logvar_min=model_logvar_min,
+            logvar_max=model_logvar_max,
             full_bayes=bool(full_bayes),
             param_type=param_type,
             mu_init=mu_init,
             init_rho=(float(init_rho) if init_rho is not None else None),
+            var_reduction_h=model_var_reduction_h,
         )
         test_model.load_state_dict(sel_state["state_dict"], strict=True)
         test_model = test_model.to(device)
@@ -643,13 +782,13 @@ def main() -> None:
         test_report = evaluate_split(
             model=test_model,
             files=test_files,
-            mc_eval=int(cfg["train"]["mc_eval"]),
+            mc_eval=mc_eval,
             device=device,
             temperature=None,
             threshold=float(sel_thr),
             fixed_threshold=float(sel_thr),
-            bootstrap_n=int(cfg["eval"]["bootstrap"].get("n_boot", 1000)),
-            bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+            bootstrap_n=bootstrap_n,
+            bootstrap_seed=bootstrap_seed,
             batch_size=eval_batch_size,
             num_workers=eval_num_workers,
             save_pred_path=save_pred_path,
@@ -670,13 +809,13 @@ def main() -> None:
             rep = evaluate_split(
                 model=test_model,
                 files=client_files,
-                mc_eval=int(cfg["train"]["mc_eval"]),
+                mc_eval=mc_eval,
                 device=device,
                 temperature=None,
                 threshold=float(sel_thr),
                 fixed_threshold=float(sel_thr),
                 bootstrap_n=0,
-                bootstrap_seed=int(cfg["eval"]["bootstrap"].get("seed", 42)),
+                bootstrap_seed=bootstrap_seed,
                 batch_size=eval_batch_size,
                 num_workers=eval_num_workers,
             )
@@ -722,7 +861,7 @@ def main() -> None:
         "selected": {"mode": model_sel, **selected},
         "rounds": int(rounds),
         "used_point_init": bool(used_point),
-        "train_backbone": bool(cfg["backbone"].get("train_backbone", False)),
+        "train_backbone": bool(train_backbone),
         "run_dir": str(run_dir),
     }
     write_json(run_dir / "summary.json", summary)

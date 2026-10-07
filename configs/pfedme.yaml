@@ -1,0 +1,56 @@
+run:
+  out_dir: runs/pfedme
+  run_name: seed42
+  resume: false
+
+federated:
+  algo: pfedme
+  # pFedMe: regularization coefficient lambda
+  pfedme_lambda: 15.0
+  # pFedMe: server moving-average coefficient beta
+  pfedme_beta: 1.0
+  # Server average of w_i: uniform (paper) | sample (repo-style)
+  pfedme_weighting: uniform
+  # pFedMe: inner personalized optimization steps Kß
+  pfedme_k: 5
+  # pFedMe: personalized inner-loop learning rate
+  pfedme_personal_lr: 0.005
+  # pFedMe paper objective has no L2 term; repo implementation often uses 1e-3
+  pfedme_mu: 0.0
+
+data:
+  data_dir: federated_data
+  train_split: train
+  val_split: val
+  test_split: test
+
+train:
+  rounds: 200
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  seed: 42
+  num_workers: 16
+  cache_in_memory: false
+  max_cache_files: 32
+  cache_dtype: float32
+  min_client_examples: 10
+  client_progress_bar: false
+  no_progress_bar: false
+  val_every_round: true
+  test_every_round: false
+  save_round_json: true
+  per_client_every_round: false
+
+model:
+  base_channels: 32
+  dropout: 0.1
+  use_gru: false
+  gru_hidden: 64
+
+eval:
+  eval_threshold: 0.5
+  model_selection: best
+  selection_metric: nll
+  save_test_pred_npz: test_predictions.npz

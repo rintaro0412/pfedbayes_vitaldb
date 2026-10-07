@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -31,6 +32,40 @@ from common.metrics import (
 )
 
 
+def _macro_from_per_client_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ok = [r for r in rows if str(r.get("status", "")).lower() == "ok"]
+    if not ok:
+        return {
+            "n_clients": 0,
+            "macro_pre": {},
+            "weighted_by_n_pre": {},
+        }
+    df = pd.DataFrame(ok).copy()
+    if "n" not in df.columns:
+        df["n"] = 0
+    df["n"] = pd.to_numeric(df["n"], errors="coerce").fillna(0.0)
+
+    metric_cols = ["auprc_pre", "auroc_pre", "brier_pre", "nll_pre", "ece_pre"]
+    macro: dict[str, float] = {}
+    weighted: dict[str, float] = {}
+    for col in metric_cols:
+        if col not in df.columns:
+            continue
+        vals = pd.to_numeric(df[col], errors="coerce")
+        macro[col] = float(vals.mean())
+        mask = vals.notna() & (df["n"] > 0)
+        if bool(mask.any()):
+            weighted[col] = float(np.average(vals[mask].to_numpy(dtype=float), weights=df.loc[mask, "n"].to_numpy(dtype=float)))
+        else:
+            weighted[col] = float("nan")
+
+    return {
+        "n_clients": int(len(df)),
+        "macro_pre": macro,
+        "weighted_by_n_pre": weighted,
+    }
+
+
 @torch.no_grad()
 def _predict_logits(model, dl, *, device) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
@@ -52,7 +87,7 @@ def _expand_case_ids(ds: WindowedNPZDataset) -> np.ndarray:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Evaluate IOH model on windowed NPZ splits")
+    ap = argparse.ArgumentParser(description="Evaluate hypoxemia model on windowed NPZ splits")
     ap.add_argument("--data-dir", default="federated_data", help="Output of scripts/build_dataset.py")
     ap.add_argument("--run-dir", required=True, help="Run dir created by centralized/train.py")
     ap.add_argument("--split", default="test", choices=["train", "test"])
@@ -181,8 +216,6 @@ def main() -> None:
         }
         group_rows.append(row)
         offset += n
-    import pandas as pd
-
     pd.DataFrame(group_rows).to_csv(run_dir / f"eval_{args.split}_per_group.csv", index=False)
 
     if args.per_client and str(args.split) == "test":
@@ -247,10 +280,14 @@ def main() -> None:
             run_dir / "test_report_per_client.json",
             {
                 "threshold": float(threshold),
+                "client_macro_summary": _macro_from_per_client_rows(per_client_rows),
                 "clients": per_client_reports,
             },
         )
         pd.DataFrame(per_client_rows).to_csv(run_dir / "test_report_per_client.csv", index=False)
+        # Also attach client-macro summary to eval_test.json to keep global/macro separation explicit.
+        report["client_macro_summary"] = _macro_from_per_client_rows(per_client_rows)
+        write_json(out_path, report)
 
     print(json.dumps(report["metrics_pre"], indent=2))
     print(f"Saved: {out_path}")

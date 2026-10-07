@@ -21,7 +21,7 @@ venv/
 .venv/
 ENV/
 env/
-venv-gpu/
+venv-ioh/
 
 # Local env files
 .env
@@ -44,15 +44,22 @@ Thumbs.db
 
 # Data / generated artifacts
 federated_data/
+federated_data2/
+federated_data3/
 paper/
 vitaldb_data/
-vitaldb_data_old/
 data/
 runs/
+runs_old/
+runs_ioh/
+outputs_*/
 tmp/
 clinical_data.csv
 data_inventory.json
 tmp_*.json
+
+existing_research/hypotension/data/
+existing_research/hypotension/download_hypotension_run.json
 
 # Model/checkpoint artifacts
 *.pt
@@ -63,3 +70,14 @@ tmp_*.json
 # Local scratch
 a.py
 目次案.pptx
+
+# ICAISE public exports use configs/icaise2026/publication_files.json.
+# Keep unselected results, submission files and new research local.
+/figures/
+/tables/
+/papers/
+/paper_studies/
+/research_sources_continuous/
+/deep-research-*.md
+/research_notes_*.md
+/federated_command_list.md

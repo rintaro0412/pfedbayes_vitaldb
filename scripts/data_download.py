@@ -12,34 +12,33 @@ import pandas as pd
 import vitaldb
 from tqdm import tqdm
 
-# 設定 (Medicina 2025 Reproduction)
+# 設定 (VitalDB hypoxemia prediction)
 SAVE_DIR = "./vitaldb_data"
 CLINICAL_SAVE_PATH = "clinical_data.csv"
 
-# 論文に基づく取得トラック
-# ETCO2波形は VitalDB では Primus/CO2（capnography wave）として定義される
-ALL_TRACKS = [
-    'Solar8000/ART_MBP',   # 正解ラベル用 (Mean Arterial Pressure)
-    'SNUADC/PLETH',        # 波形1: PPG
-    'SNUADC/ECG_II',       # 波形2: ECG
-    'SNUADC/ART',          # 波形3: ABP
-    'Primus/CO2',          # 波形4: ETCO2 (capnography wave)
+# 低酸素イベント予測では、症例を多く残すため ABP/MAP は必須にしない。
+# 数値トラックは 100Hz グリッドに前方補間され、既存の 1D CNN 入力として扱う。
+INPUT_TRACKS = [
+    'Solar8000/HR',           # 心拍数
+    'Solar8000/PLETH_SPO2',   # SpO2: 入力およびラベル作成
+    'Primus/ETCO2',           # 呼気終末 CO2
+    'Primus/FIO2',            # 吸入酸素濃度
 ]
+LABEL_TRACK = 'Solar8000/PLETH_SPO2'
+ALL_TRACKS = list(dict.fromkeys(INPUT_TRACKS))
 
-# 除外対象
-EXCLUDED_OPTYPES = ['Transplantation', 'Cardiac Surgery']
+# 既定では手術種別・麻酔種別で除外しない。必要なら CLI で指定する。
+EXCLUDED_OPTYPES: list[str] = []
 
 DEFAULT_WORKERS = os.cpu_count() or 4
 CSV_COMPRESSION = {"method": "gzip", "compresslevel": 1}
 TRACK_INDEX = {name: i for i, name in enumerate(ALL_TRACKS)}
 
-REQUIRED_TRACKS = [
-    'Solar8000/ART_MBP',
-    'SNUADC/PLETH',
-    'SNUADC/ECG_II',
-    'SNUADC/ART',
-    'Primus/CO2',
-]
+REQUIRED_TRACKS = list(ALL_TRACKS)
+
+
+def _split_arg_list(value: str) -> list[str]:
+    return [x.strip() for x in str(value or "").replace(",", " ").split() if x.strip()]
 
 def _load_case_data(case_id):
     return vitaldb.load_case(case_id, ALL_TRACKS, interval=1/100)
@@ -77,7 +76,7 @@ def download_case(case_id, save_dir: str, force: bool):
         return "failed", case_id
 
 def main():
-    parser = argparse.ArgumentParser(description="VitalDB Downloader (Medicina 2025 Reproduction)")
+    parser = argparse.ArgumentParser(description="VitalDB Downloader (hypoxemia prediction)")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--executor", choices=["process", "thread"], default="process")
     parser.add_argument("--no-prefilter-required", action="store_true", help="Do not prefilter cases by REQUIRED_TRACKS")
@@ -88,6 +87,16 @@ def main():
     parser.add_argument("--force", action="store_true", help="Overwrite existing case files")
     parser.add_argument("--shuffle", action="store_true", help="Shuffle target cases before limiting")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--ane-type",
+        default="",
+        help="Comma/space-separated anesthesia types to keep (default: all types).",
+    )
+    parser.add_argument(
+        "--exclude-optypes",
+        default=",".join(EXCLUDED_OPTYPES),
+        help="Comma/space-separated optype values to exclude (default: none).",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -109,6 +118,9 @@ def main():
     def _safe_version(mod) -> str | None:
         return getattr(mod, "__version__", None)
 
+    ane_types = _split_arg_list(args.ane_type)
+    excluded_optypes = _split_arg_list(args.exclude_optypes)
+
     run_meta = {
         "started_utc": _now_iso(),
         "config": {
@@ -119,7 +131,9 @@ def main():
             "prefilter_required": bool(not args.no_prefilter_required),
             "all_tracks": list(ALL_TRACKS),
             "required_tracks": list(REQUIRED_TRACKS),
-            "excluded_optypes": list(EXCLUDED_OPTYPES),
+            "label_track": str(LABEL_TRACK),
+            "ane_type_filter": list(ane_types),
+            "excluded_optypes": list(excluded_optypes),
             "max_cases": int(args.max_cases),
             "force": bool(args.force),
             "shuffle": bool(args.shuffle),
@@ -148,11 +162,11 @@ def main():
         print(f"Failed to fetch case list: {e}")
         return
 
-    target_mask = (
-        (df_cases['age'] >= 18) & 
-        (df_cases['ane_type'] == 'General') &
-        (~df_cases['optype'].isin(EXCLUDED_OPTYPES))
-    )
+    target_mask = df_cases['age'] >= 18
+    if ane_types:
+        target_mask = target_mask & df_cases['ane_type'].isin(ane_types)
+    if excluded_optypes:
+        target_mask = target_mask & (~df_cases['optype'].isin(excluded_optypes))
     target_cases = df_cases[target_mask]['caseid'].tolist()
 
     if not args.no_prefilter_required:

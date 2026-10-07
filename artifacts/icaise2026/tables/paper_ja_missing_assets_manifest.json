@@ -1,0 +1,88 @@
+{
+  "generated": {
+    "table2": "artifacts/icaise2026/tables/table2_method_settings.csv",
+    "table4": "artifacts/icaise2026/tables/table4_client_macro.csv",
+    "table4_long": "artifacts/icaise2026/tables/table4_client_macro_stats_long.csv"
+  },
+  "warnings": [],
+  "method_manifest": "configs/icaise2026/experiments.yaml",
+  "aggregation": "client_macro",
+  "model_scopes": {
+    "Centralized": "global",
+    "Local": "client_specific",
+    "FedAvg": "global",
+    "FedProx": "global",
+    "SCAFFOLD": "global",
+    "FedNova": "global",
+    "Per-FedAvg": "global",
+    "pFedMe": "global",
+    "pFedBayes": "global"
+  },
+  "config_provenance": [
+    {
+      "method": "Centralized",
+      "config_path": "runs/centralized/seed0/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/centralized/seed0"
+    },
+    {
+      "method": "Local",
+      "config_path": "runs/local/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/local/seed42"
+    },
+    {
+      "method": "FedAvg",
+      "config_path": "runs/fedavg/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/fedavg/seed42"
+    },
+    {
+      "method": "FedProx",
+      "config_path": "runs/fedprox/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/fedprox/seed42"
+    },
+    {
+      "method": "SCAFFOLD",
+      "config_path": "runs/scaffold/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/scaffold/seed42"
+    },
+    {
+      "method": "FedNova",
+      "config_path": "runs/fednova/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/fednova/seed42"
+    },
+    {
+      "method": "Per-FedAvg",
+      "config_path": "runs/perfedavg/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/perfedavg/seed42"
+    },
+    {
+      "method": "pFedMe",
+      "config_path": "runs/pfedme/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/pfedme/seed42"
+    },
+    {
+      "method": "pFedBayes",
+      "config_path": "runs/pfedbayes/seed42/config.json",
+      "config_source": "saved_run_config",
+      "source_run_dir": "runs/pfedbayes/seed42"
+    }
+  ],
+  "per_client_sources": {
+    "Centralized": "runs/centralized/seed0/test_report_per_client.csv",
+    "Local": "runs/local/seed42/test_report_per_client.csv",
+    "FedAvg": "runs/fedavg/seed42/test_report_per_client.csv",
+    "FedProx": "runs/fedprox/seed42/test_report_per_client.csv",
+    "SCAFFOLD": "runs/scaffold/seed42/test_report_per_client.csv",
+    "FedNova": "runs/fednova/seed42/test_report_per_client.csv",
+    "Per-FedAvg": "runs/perfedavg/seed42/test_report_per_client.csv",
+    "pFedMe": "runs/pfedme/seed42/test_report_per_client.csv",
+    "pFedBayes": "runs/pfedbayes/seed42/test_report_per_client.csv"
+  }
+}

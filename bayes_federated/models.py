@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 import torch
 import torch.nn as nn
 
-from bayes_federated.bayes_layers import BayesianConv1d, BayesianLinear, BayesianGRU, BayesParams
+from bayes_federated.bayes_layers import BayesianConv1d, BayesianLinear, BayesParams
 from bayes_federated.bayes_param import normalize_param_type
 from common.ioh_model import ConvBlock1d, IOHModelConfig
 
@@ -20,7 +20,7 @@ class PointInit:
 
 class BFLModel(nn.Module):
     """
-    IOH backbone + Bayesian head.
+    Shared event-prediction backbone + Bayesian head.
     """
 
     def __init__(
@@ -99,30 +99,8 @@ class BFLModel(nn.Module):
             self.block3 = ConvBlock1d(c0 * 2, c0 * 4, k=3, dropout=cfg.dropout)
         self.pool = nn.MaxPool1d(kernel_size=2)
 
-        self.use_gru = bool(cfg.use_gru)
-        if self.use_gru:
-            if self.full_bayes:
-                self.gru = BayesianGRU(
-                    input_size=c0 * 4,
-                    hidden_size=int(cfg.gru_hidden),
-                    prior_sigma=next_sigma(),
-                    logvar_min=float(logvar_min),
-                    logvar_max=float(logvar_max),
-                    param_type=param_type,
-                    mu_init=mu_init,
-                    init_rho=init_rho,
-                )
-            else:
-                self.gru = nn.GRU(
-                    input_size=c0 * 4,
-                    hidden_size=int(cfg.gru_hidden),
-                    num_layers=1,
-                    batch_first=True,
-                    bidirectional=False,
-                )
-            head_in = int(cfg.gru_hidden)
-        else:
-            head_in = c0 * 4
+        self.use_gru = False
+        head_in = c0 * 4
 
         self.use_clin = int(cfg.clin_dim) > 0
         if self.use_clin:
@@ -194,15 +172,7 @@ class BFLModel(nn.Module):
         else:
             x = self.block3(x)
         x = self.pool(x)
-        if self.use_gru:
-            x = x.transpose(1, 2)
-            if self.full_bayes:
-                feat = self.gru(x, sample=sample)
-            else:
-                out, _ = self.gru(x)
-                feat = out[:, -1, :]
-        else:
-            feat = x.mean(dim=-1)
+        feat = x.mean(dim=-1)
 
         if self.use_clin:
             if x_clin is None:
@@ -516,7 +486,9 @@ def build_bfl_model_from_point_checkpoint(
     point_head = _extract_point_head(state_dict)
     if not model.full_bayes:
         mapped = _map_backbone_state(state_dict)
-        model.load_state_dict(mapped, strict=False)
+        current = model.state_dict()
+        mapped_compatible = {k: v for k, v in mapped.items() if k in current and tuple(current[k].shape) == tuple(v.shape)}
+        model.load_state_dict(mapped_compatible, strict=False)
         if point_head is None:
             prior_params = model.get_posterior()
             return model, prior_params, False
@@ -548,6 +520,10 @@ def build_bfl_model_from_point_checkpoint(
             b = state_dict[b_key].detach().clone().float()
         else:
             b = torch.zeros((w.shape[0],), dtype=w.dtype)
+        if tuple(module.weight_mu.shape) != tuple(w.shape):
+            return
+        if tuple(module.bias_mu.shape) != tuple(b.shape):
+            return
         param = module.prior_weight_logvar.detach().clone().float()
         bparam = module.prior_bias_logvar.detach().clone().float()
         module.set_posterior(w, param, b, bparam)
@@ -560,6 +536,10 @@ def build_bfl_model_from_point_checkpoint(
             return
         w = state_dict[w_key].detach().clone().float()
         b = torch.zeros((w.shape[0],), dtype=w.dtype)
+        if tuple(block.conv.weight_mu.shape) != tuple(w.shape):
+            return
+        if tuple(block.conv.bias_mu.shape) != tuple(b.shape):
+            return
         param = block.conv.prior_weight_logvar.detach().clone().float()
         bparam = block.conv.prior_bias_logvar.detach().clone().float()
         block.conv.set_posterior(w, param, b, bparam)

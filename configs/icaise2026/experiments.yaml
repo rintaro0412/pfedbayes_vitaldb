@@ -1,0 +1,265 @@
+schema_version: 1
+protocol_id: icaise2026_paper_v1
+data:
+  data_dir: federated_data
+  definition: configs/icaise2026/dataset.json
+  require_validation: true
+output_root: runs/icaise2026
+methods:
+- key: centralized
+  label: Centralized
+  entrypoint: centralized/train.py
+  config: configs/icaise2026/centralized.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/centralized/seed0
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: local
+  label: Local
+  entrypoint: scripts/train_local.py
+  config: configs/icaise2026/local.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/local/seed42
+  model_scope: client_specific
+  curve_kind: local_round_client
+  inference_kind: local_point
+  mc_eval: 1
+- key: fedavg
+  label: FedAvg
+  entrypoint: federated/server.py
+  config: configs/icaise2026/fedavg.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/fedavg/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: fedprox
+  label: FedProx
+  entrypoint: federated/server.py
+  config: configs/icaise2026/fedprox.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/fedprox/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: scaffold
+  label: SCAFFOLD
+  entrypoint: federated/server.py
+  config: configs/icaise2026/scaffold.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/scaffold/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: fednova
+  label: FedNova
+  entrypoint: federated/server.py
+  config: configs/icaise2026/fednova.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/fednova/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: perfedavg
+  label: Per-FedAvg
+  entrypoint: federated/server.py
+  config: configs/icaise2026/perfedavg.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/perfedavg/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: pfedme
+  label: pFedMe
+  entrypoint: federated/server.py
+  config: configs/icaise2026/pfedme.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/pfedme/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: point
+  mc_eval: 1
+- key: pfedbayes
+  label: pFedBayes
+  entrypoint: bayes_federated/pfedbayes_server.py
+  config: configs/icaise2026/pfedbayes.yaml
+  seeds:
+  - 42
+  source_run_dir: runs/pfedbayes/seed42
+  model_scope: global
+  curve_kind: history
+  inference_kind: bayes
+  mc_eval: 25
+stages:
+  evaluate:
+  - name: point_global
+    for_each_run: true
+    methods:
+    - centralized
+    - fedavg
+    - fedprox
+    - scaffold
+    - fednova
+    - perfedavg
+    - pfedme
+    argv:
+    - '{python}'
+    - centralized/eval.py
+    - --data-dir
+    - '{data_dir}'
+    - --run-dir
+    - '{run_dir}'
+    - --split
+    - test
+    - --threshold
+    - '0.5'
+    - --per-client
+    - --save-pred-npz
+    - '{run_dir}/test_predictions.npz'
+    outputs:
+    - '{run_dir}/eval_test.json'
+    - '{run_dir}/test_report_per_client.csv'
+    inputs:
+    - '{run_dir}/checkpoints/model_best.pt'
+  - name: bayes_global
+    for_each_run: true
+    methods:
+    - pfedbayes
+    argv:
+    - '{python}'
+    - bayes_federated/eval.py
+    - --data-dir
+    - '{data_dir}'
+    - --checkpoint
+    - '{run_dir}/checkpoints/model_best.pt'
+    - --split
+    - test
+    - --mc-eval
+    - '25'
+    - --bootstrap-n
+    - '0'
+    - --threshold
+    - '0.5'
+    - --output
+    - '{run_dir}/global_reassessment.json'
+    - --save-pred-npz
+    - '{run_dir}/global_reassessment_predictions.npz'
+    outputs:
+    - '{run_dir}/global_reassessment.json'
+    inputs:
+    - '{run_dir}/checkpoints/model_best.pt'
+  - name: bayes_personalized
+    for_each_run: true
+    methods:
+    - pfedbayes
+    argv:
+    - '{python}'
+    - bayes_federated/eval.py
+    - --data-dir
+    - '{data_dir}'
+    - --personalized-run-dir
+    - '{run_dir}'
+    - --split
+    - test
+    - --mc-eval
+    - '25'
+    - --bootstrap-n
+    - '0'
+    - --threshold
+    - '0.5'
+    - --output
+    - '{run_dir}/test_report_personalized.json'
+    outputs:
+    - '{run_dir}/test_report_personalized.json'
+    inputs:
+    - '{run_dir}/checkpoints/model_best.pt'
+  aggregate:
+  - name: paper_tables
+    argv:
+    - '{python}'
+    - scripts/make_paper_ja_missing_assets.py
+    - --methods-json
+    - '{methods_json}'
+    - --tables-only
+    - --tables-dir
+    - '{protocol_dir}/tables'
+    - --figures-dir
+    - '{protocol_dir}/figures'
+    outputs:
+    - '{protocol_dir}/tables/table2_method_settings.csv'
+    - '{protocol_dir}/tables/table4_client_macro.csv'
+  figures:
+  - name: learning_curves
+    argv:
+    - '{python}'
+    - scripts/make_icaise_training_curves.py
+    - --methods-json
+    - '{methods_json}'
+    - --out-csv
+    - '{protocol_dir}/tables/icaise_training_curves.csv'
+    - --figures-dir
+    - '{protocol_dir}/figures'
+    outputs:
+    - '{protocol_dir}/tables/icaise_training_curves.csv'
+    - '{protocol_dir}/figures/icaise_training_loss_normalized.png'
+  - name: risk_coverage
+    for_each_run: true
+    methods:
+    - pfedbayes
+    argv:
+    - '{python}'
+    - scripts/make_risk_coverage.py
+    - --pred-npz
+    - '{run_dir}/test_predictions.npz'
+    - --uncertainty-key
+    - prob_total_var
+    - --out-dir
+    - '{protocol_dir}/risk_coverage'
+    outputs:
+    - '{protocol_dir}/risk_coverage/risk_coverage.csv'
+    inputs:
+    - '{run_dir}/test_predictions.npz'
+  resources:
+  - name: inference
+    argv:
+    - '{python}'
+    - scripts/benchmark_icaise_inference.py
+    - --methods-json
+    - '{methods_json}'
+    - --data-dir
+    - '{data_dir}'
+    - --split
+    - test
+    - --device
+    - auto
+    - --batch-size
+    - '256'
+    - --num-workers
+    - '0'
+    - --warmup
+    - '1'
+    - --repeats
+    - '3'
+    - --out-csv
+    - '{protocol_dir}/tables/inference_benchmark.csv'
+    - --out-json
+    - '{protocol_dir}/tables/inference_benchmark.json'
+    - --fail-on-error
+    outputs:
+    - '{protocol_dir}/tables/inference_benchmark.csv'
+    - '{protocol_dir}/tables/inference_benchmark.json'

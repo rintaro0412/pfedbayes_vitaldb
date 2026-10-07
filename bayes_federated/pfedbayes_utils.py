@@ -5,7 +5,7 @@ from typing import Dict, List
 import torch
 
 from bayes_federated.bayes_layers import BayesParams
-from bayes_federated.bayes_param import normalize_param_type, param_to_var, rho_from_sigma
+from bayes_federated.bayes_param import normalize_param_type, param_to_std, rho_from_sigma
 
 
 def _clone_tensor(t: torch.Tensor, *, device: torch.device, requires_grad: bool) -> torch.Tensor:
@@ -97,25 +97,22 @@ def _normalize_weights(weights: List[float], *, dtype: torch.dtype, device: torc
     return w / w_sum
 
 
-def _var_to_param(
-    var: torch.Tensor,
+def _std_to_param(
+    std: torch.Tensor,
     *,
     param_type: str,
     logvar_min: float | None,
     logvar_max: float | None,
 ) -> torch.Tensor:
-    var = var.clamp_min(1e-12)
+    std = std.clamp_min(1e-12)
     ptype = normalize_param_type(param_type)
     if ptype == "rho":
-        sigma = torch.sqrt(var)
-        return rho_from_sigma(sigma)
-    logvar = torch.log(var)
-    if logvar_min is not None and logvar_max is not None:
-        return logvar.clamp(min=float(logvar_min), max=float(logvar_max))
+        return rho_from_sigma(std)
+    logvar = 2.0 * torch.log(std)
     if logvar_min is not None:
-        return logvar.clamp(min=float(logvar_min))
+        logvar = logvar.clamp(min=float(logvar_min))
     if logvar_max is not None:
-        return logvar.clamp(max=float(logvar_max))
+        logvar = logvar.clamp(max=float(logvar_max))
     return logvar
 
 
@@ -131,40 +128,60 @@ def aggregate_bayes_params(
 ) -> BayesParams:
     if not locals:
         raise ValueError("No local params to aggregate.")
-    if float(server_beta) != 1.0:
-        raise ValueError("pFedBayes aggregation requires server_beta=1.0 for strict paper alignment.")
     beta = float(server_beta)
+    if beta < 0.0 or beta > 1.0:
+        raise ValueError(f"server_beta must be in [0, 1], got {beta}")
     w = _normalize_weights(weights, dtype=prev.weight_mu.dtype, device=prev.weight_mu.device)
     ptype = normalize_param_type(param_type)
-
     weight_mu_stack = torch.stack([lp.weight_mu for lp in locals], dim=0)
     bias_mu_stack = torch.stack([lp.bias_mu for lp in locals], dim=0)
-    weight_var_stack = torch.stack(
-        [param_to_var(lp.weight_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max) for lp in locals],
+    weight_std_stack = torch.stack(
+        [
+            param_to_std(lp.weight_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+            for lp in locals
+        ],
         dim=0,
     )
-    bias_var_stack = torch.stack(
-        [param_to_var(lp.bias_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max) for lp in locals],
+    bias_std_stack = torch.stack(
+        [
+            param_to_std(lp.bias_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+            for lp in locals
+        ],
         dim=0,
     )
+    prev_weight_std = param_to_std(prev.weight_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+    prev_bias_std = param_to_std(prev.bias_logvar, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
 
     w_broadcast_w = w.view(-1, *([1] * (weight_mu_stack.dim() - 1)))
     w_broadcast_b = w.view(-1, *([1] * (bias_mu_stack.dim() - 1)))
-    weight_mu = (w_broadcast_w * weight_mu_stack).sum(dim=0)
-    bias_mu = (w_broadcast_b * bias_mu_stack).sum(dim=0)
+    avg_weight_mu = (w_broadcast_w * weight_mu_stack).sum(dim=0)
+    avg_weight_std = (w_broadcast_w * weight_std_stack).sum(dim=0)
+    avg_bias_mu = (w_broadcast_b * bias_mu_stack).sum(dim=0)
+    avg_bias_std = (w_broadcast_b * bias_std_stack).sum(dim=0)
 
-    w_var_weight_w = w.view(-1, *([1] * (weight_var_stack.dim() - 1)))
-    w_var_weight_b = w.view(-1, *([1] * (bias_var_stack.dim() - 1)))
-    weight_var = (w_var_weight_w * (weight_var_stack + (weight_mu_stack - weight_mu) ** 2)).sum(dim=0)
-    bias_var = (w_var_weight_b * (bias_var_stack + (bias_mu_stack - bias_mu) ** 2)).sum(dim=0)
-
-    new_weight_logvar = _var_to_param(weight_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
-    new_bias_logvar = _var_to_param(bias_var, param_type=ptype, logvar_min=logvar_min, logvar_max=logvar_max)
+    # Algorithm 1 (pFedBayes): v^{t+1} = (1-β) v^t + β * Avg(v_i^{t+1})
+    # For variance-side params we aggregate in sigma-space (std), then map back.
+    new_weight_mu = (1.0 - beta) * prev.weight_mu + beta * avg_weight_mu
+    new_weight_std = (1.0 - beta) * prev_weight_std + beta * avg_weight_std
+    new_bias_mu = (1.0 - beta) * prev.bias_mu + beta * avg_bias_mu
+    new_bias_std = (1.0 - beta) * prev_bias_std + beta * avg_bias_std
+    new_weight_logvar = _std_to_param(
+        new_weight_std,
+        param_type=ptype,
+        logvar_min=logvar_min,
+        logvar_max=logvar_max,
+    )
+    new_bias_logvar = _std_to_param(
+        new_bias_std,
+        param_type=ptype,
+        logvar_min=logvar_min,
+        logvar_max=logvar_max,
+    )
 
     return BayesParams(
-        weight_mu=weight_mu.detach().clone(),
+        weight_mu=new_weight_mu.detach().clone(),
         weight_logvar=new_weight_logvar.detach().clone(),
-        bias_mu=bias_mu.detach().clone(),
+        bias_mu=new_bias_mu.detach().clone(),
         bias_logvar=new_bias_logvar.detach().clone(),
     )
 

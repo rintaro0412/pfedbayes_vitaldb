@@ -1,72 +1,68 @@
 run:
   out_dir: runs/pfedbayes
-  run_name: pfed_zeta0.001_nsample
+  run_name: seed42
   resume: false
-
-seed: 0
-device: cuda
+  device: cuda
 
 data:
   data_dir: federated_data
   train_split: train
+  val_split: val
   test_split: test
 
-clients:
-  min_examples: 10
-  sample_fraction: 1.0
-  sample_size: 0
-
-backbone:
-  checkpoint: null
+train:
+  rounds: 200
+  local_epochs: 1
+  batch_size: 64
+  lr_q: 0.001
+  lr_w: 0.001
+  weight_decay: 0.0001
+  seed: 42
+  num_workers: 64
+  min_client_examples: 10
+  val_every_round: true
+  test_every_round: false
+  per_client_every_round: true
+  mc_train: 5
+  mc_eval: 25
+  zeta: 1
+  loss_type: bce
+  pos_weight: auto  # auto=client-wise n_neg/n_pos
+  grad_clip: 5.0
+  grad_clip_w: 0.0
+  max_steps: 0
+  clients_per_round: 0
+  client_fraction: 1.0
+  q_optim: adamw
+  w_optim: adamw
   train_backbone: true
 
-bayes:
+model:
   full_bayes: true
   prior_sigma: 0.05
+  var_reduction_h: 1.0
   logvar_min: -12
   logvar_max: 6
   param_type: rho
   mu_init: pytorch
-  init_rho: -2.5
+  init_rho: -3
+  backbone_checkpoint: null
+  base_channels: 32
+  dropout: 0.1
+  use_gru: false
+  gru_hidden: 64
 
-train:
-  rounds: 100
-  local_epochs: 1
-  batch_size: 256
-  lr_q: 0.001
-  lr_w: 0.001
-  weight_decay: 0.0001
-  num_workers: 64
-  mc_train: 5
-  mc_eval: 20
-  grad_clip: 5.0
-  grad_clip_w: 0.0
-  max_steps: 0
-  q_optim: adamw
-  w_optim: adamw
-
-pfedbayes:
-  zeta: 0.0001
-  server_beta: 1.0
-  weight_mode: uniform  # uniform | n_examples (paper baseline: uniform)
-
-loss:
-  type: bce
-  pos_weight: auto  # auto=client-wise n_neg/n_pos
+agg:
+  server_beta: 0.25
+  client_weight_mode: uniform  # uniform | n_examples (paper baseline: uniform)
 
 eval:
+  eval_threshold: 0.5
   model_selection: best  # best | last
-  selection_source: test # test
-  selection_metric: auroc # auprc | auroc | accuracy
+  selection_source: val # val | test
+  selection_metric: nll # auprc | auroc | ece | brier | nll (nll/brier/ece は小さいほど良い)
   selection_use_post: false
-  threshold:
-    fixed: 0.5
-  calibration:
-    temperature_max_iter: 0
   # Save per-sample test predictions/uncertainty (true => run_dir/test_predictions.npz)
   save_test_pred_npz: true
-  test_every_round: true
-  per_client_every_round: true
-  bootstrap:
-    n_boot: 100
-    seed: 42
+  bootstrap_n: 100
+  bootstrap_seed: 42

@@ -1,0 +1,54 @@
+# Snapshot reconstructed from the saved ICAISE run configuration.
+# Fresh replay uses a new output directory; original settings are preserved in source_configs/.
+run:
+  out_dir: runs/icaise2026/icaise2026_paper_v1/perfedavg
+  run_name: seed42
+  resume: false
+data:
+  data_dir: federated_data
+  train_split: train
+  val_split: val
+  test_split: test
+train:
+  rounds: 200
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  seed: 42
+  num_workers: 16
+  cache_in_memory: false
+  max_cache_files: 32
+  cache_dtype: float32
+  min_client_examples: 10
+  client_progress_bar: false
+  no_progress_bar: false
+  log_client_sim: false
+  val_every_round: true
+  test_every_round: false
+  save_round_json: true
+  per_client_every_round: false
+model:
+  base_channels: 32
+  dropout: 0.1
+  use_gru: false
+  gru_hidden: 64
+eval:
+  save_test_pred_npz: test_predictions.npz
+  eval_threshold: 0.5
+  model_selection: best
+  selection_metric: nll
+  selection_source: val
+federated:
+  algo: perfedavg
+  fedprox_mu: 0.1
+  scaffold_weighting: uniform
+  perfedavg_alpha: 0.001
+  perfedavg_beta: 0.001
+  perfedavg_weighting: uniform
+  pfedme_lambda: 15.0
+  pfedme_beta: 1.0
+  pfedme_weighting: uniform
+  pfedme_k: 5
+  pfedme_personal_lr: 0.005
+  pfedme_mu: 0.0

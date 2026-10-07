@@ -1,0 +1,10 @@
+method,training_time_min,runtime_type,peak_cpu_rss_tree_mb,peak_gpu_memory_tree_mb,source_or_note
+Centralized,65.2,measured,342110.5,518.0,Full 200-round/epoch benchmark completed.
+Local,72.0,measured,362690.9,550.0,Full benchmark completed.
+FedAvg,185.8,measured,60266.4,378.0,Full 200-round benchmark completed.
+FedProx,228.9,measured,51058.6,376.0,Full 200-round benchmark completed.
+SCAFFOLD,187.3,measured,52453.4,378.0,Full 200-round benchmark completed.
+FedNova,191.3,measured,58454.3,376.0,Full 200-round benchmark completed.
+Per-FedAvg,239.0,measured,56889.9,526.0,Full 200-round benchmark completed.
+pFedMe,478.8,measured,54694.1,524.0,Full 200-round benchmark completed.
+pFedBayes,2160.0,projected,97455.4,1918.0,Projected 200-round runtime from the first 37 completed rounds; resource peaks from pFedBayes resource samples.

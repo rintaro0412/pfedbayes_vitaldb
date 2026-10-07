@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "methods": [
+    {
+      "method": "centralized",
+      "source_run_dir": "runs/centralized/seed0",
+      "source_config": "configs/icaise2026/source_configs/centralized.json",
+      "source_config_sha256": "7c01551a371dffb2398ef785c8dacbdc0d5f667ab306ea02fba03205e1ad9655",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed0",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "local",
+      "source_run_dir": "runs/local/seed42",
+      "source_config": "configs/icaise2026/source_configs/local.json",
+      "source_config_sha256": "d31f6a1996453bd6da8a87cf1ec32c29c19ab818a3832208dcb94be79f6d5f25",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "fedavg",
+      "source_run_dir": "runs/fedavg/seed42",
+      "source_config": "configs/icaise2026/source_configs/fedavg.json",
+      "source_config_sha256": "ab69f48f4d2d124d4981a104d6d1d482c30360d0e841468017624a4704f65ce4",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "fedprox",
+      "source_run_dir": "runs/fedprox/seed42",
+      "source_config": "configs/icaise2026/source_configs/fedprox.json",
+      "source_config_sha256": "a18a2ae70921c17eb11bb1777d9243c99427a8ffba86971fdb82812993e2a2af",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "scaffold",
+      "source_run_dir": "runs/scaffold/seed42",
+      "source_config": "configs/icaise2026/source_configs/scaffold.json",
+      "source_config_sha256": "22404ee18724d8686e2e4c5e4f55a382fbe3416df9fa55df0488383e7ac8603d",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "fednova",
+      "source_run_dir": "runs/fednova/seed42",
+      "source_config": "configs/icaise2026/source_configs/fednova.json",
+      "source_config_sha256": "2208b6b4fb059f4411f4d00d1651666d287bae7bb47934ae80f8ba7596c9ed51",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "perfedavg",
+      "source_run_dir": "runs/perfedavg/seed42",
+      "source_config": "configs/icaise2026/source_configs/perfedavg.json",
+      "source_config_sha256": "bb030c94f3900b4dc48e54c2f229092a43b99e90e266a6b9ab13909a2bc51488",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "pfedme",
+      "source_run_dir": "runs/pfedme/seed42",
+      "source_config": "configs/icaise2026/source_configs/pfedme.json",
+      "source_config_sha256": "7878c56d966b332176830edf8f3561f653fc5f5b52d744a3c9b1922edf08d418",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    },
+    {
+      "method": "pfedbayes",
+      "source_run_dir": "runs/pfedbayes/seed42",
+      "source_config": "configs/icaise2026/source_configs/pfedbayes.json",
+      "source_config_sha256": "a20c5239f74562531060adef7038e52a2f20eafc72f2103467cb6e31bdb40da3",
+      "recorded_git_hash": "636f82608dd696fb70aae48794563a6e257ec2c8",
+      "source_dirty_status": "not_recorded",
+      "actual_seed": 42,
+      "source_run_name": "seed42",
+      "replay_changes": [
+        "run.resume=false",
+        "isolated run.out_dir/run.run_name",
+        "explicit eval.selection_source=val"
+      ]
+    }
+  ]
+}
