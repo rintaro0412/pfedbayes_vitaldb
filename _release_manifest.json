@@ -3,7 +3,7 @@
   "source": "current_worktree",
   "file_list_sha256": "12011bdf30f7d3a0f71837c588f05eeced1e6ad6f5c6db99c3ae6b7964b79809",
   "file_count": 114,
-  "total_bytes": 1979798,
+  "total_bytes": 1979804,
   "files": [
     {
       "path": ".gitignore",
@@ -14,8 +14,8 @@
     {
       "path": "CITATION.cff",
       "source_path": "CITATION.cff",
-      "sha256": "f43e6c26b65a8b0ec7917cc23746c2f2431f279a8bef3697b227a939370cafa3",
-      "bytes": 599
+      "sha256": "d7996f9af94a442a5a7b3ba446d8b3762228930ac0df73bb78e76985bee9123c",
+      "bytes": 605
     },
     {
       "path": "README.icaise2026.md",
