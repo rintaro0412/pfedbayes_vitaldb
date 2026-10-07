@@ -1,6 +1,6 @@
 # ICAISE スクリプトガイド
 
-コマンドはリポジトリのルートから実行してください。公開するファイルの一覧は `configs/icaise2026/publication_files.json` にあります。開発用の作業ツリーには、公開対象外のスクリプトも残っています。
+コマンドはリポジトリのルートから実行する。公開するファイルの一覧は `configs/icaise2026/publication_files.json` にある。開発用の作業ツリーには、公開対象外のスクリプトも残っている。
 
 | 段階 | 実行スクリプト | 入力・出力 |
 |---|---|---|
@@ -18,10 +18,10 @@
 | 任意の探索的データ解析（EDA） | `make_eda_figures.py`, `make_eda_supplement.py` | データセットの要約と抽出した信号の解析。全量集計・ブートストラップは別の作業として実施 |
 | 公開用ファイルの書き出し | `prepare_public_release.py` | 公開対象リストのファイルだけを空の独立したディレクトリへ書き出し、ハッシュ値を記録 |
 
-`run_all_pfedbayes.sh` はマニフェストに従う実験実行スクリプトを呼び出し、既定では実行計画の表示だけを行います。明示的に指定した場合の旧実行方式は、互換性のため残しています。その乱数種・パスの規則は公開版の実験手順とは異なります。
+`run_all_pfedbayes.sh` はマニフェストに従う実験実行スクリプトを呼び出し、既定では実行計画の表示だけを行う。明示的に指定した場合の旧実行方式は、互換性のため残している。その乱数種・パスの規則は公開版の実験手順とは異なる。
 
-学習の実装は、引き続き `centralized/train.py`、`federated/server.py` / `client.py`、`bayes_federated/pfedbayes_server.py` / `pfedbayes_client.py` にあります。評価は `centralized/eval.py`、既存の学習スクリプト、`bayes_federated/eval.py` に実装しています。共通のデータ読み込み、評価指標、実験記録は `common/` にあります。
+学習の実装は、引き続き `centralized/train.py`、`federated/server.py` / `client.py`、`bayes_federated/pfedbayes_server.py` / `pfedbayes_client.py` にある。評価は `centralized/eval.py`、既存の学習スクリプト、`bayes_federated/eval.py` に実装している。共通のデータ読み込み、評価指標、実験記録は `common/` にある。
 
-生成した同じ手法一覧を、表の作成、学習曲線の描画、推論の計測に渡せます。各スクリプトが求める入力形式が異なるため、`curve_kind` と `inference_kind` は別の項目です。論文用の成果物を作成するときは、自動検出に頼らず実験出力のパスを明示してください。
+生成した同じ手法一覧を、表の作成、学習曲線の描画、推論の計測に渡せる。各スクリプトが求める入力形式が異なるため、`curve_kind` と `inference_kind` は別の項目である。論文用の成果物を作成するときは、自動検出に頼らず実験出力のパスを明示する。
 
-コマンド、既知の制約、共通モデルのクライアント平均（client-macro）評価と個人化した事後分布による評価の違いは、[実験手順の詳細](../docs/icaise2026.md)を参照してください。
+コマンド、既知の制約、共通モデルのクライアント平均（client-macro）評価と個人化した事後分布による評価の違いは、[実験手順の詳細](../docs/icaise2026.md)を参照する。
